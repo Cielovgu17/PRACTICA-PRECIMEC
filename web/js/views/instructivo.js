@@ -30,6 +30,13 @@ function imagesOf(step) {
 // Qué se ve a la derecha: solo lo que corresponde al paso elegido. Ya no se muestra el modelo general
 // (clavo con la hoja) en etapas o subpasos que no tienen animación propia: confundía con otro paso.
 function sourcesFor({ step, parent }) {
+  // Una etapa con subpasos no muestra nada propio (ni imagen ni animación) hasta que se elige un subpaso.
+  if (!parent && step.children.length) {
+    return {
+      sources: [],
+      empty: { title: 'Elige un subpaso', text: 'Abre uno de los subpasos de la lista para ver su animación o su imagen.' },
+    };
+  }
   const own = animationsOf(step);
   if (own.length) return { sources: own, note: '' };
   const ownImages = imagesOf(step);
@@ -37,12 +44,6 @@ function sourcesFor({ step, parent }) {
   // Un subpaso sin animación propia sigue mostrando la de su etapa, si la etapa tiene una.
   const inherited = parent ? animationsOf(parent) : [];
   if (inherited.length) return { sources: inherited, note: '' };
-  if (!parent && step.children.length) {
-    return {
-      sources: [],
-      empty: { title: 'Elige un subpaso', text: 'Abre uno de los subpasos de la lista para ver su animación o su imagen.' },
-    };
-  }
   return { sources: [] };
 }
 
