@@ -1,0 +1,4 @@
+html, body { margin: 0; background: #021a35; }
+#lienzo { position: relative; width: 1600px; height: 1000px; overflow: hidden; font-family: "DM Sans", "Segoe UI", sans-serif; }
+#lienzo canvas { position: absolute; inset: 0; display: block; width: 1600px; height: 1000px; }
+#lienzo svg { position: absolute; inset: 0; }

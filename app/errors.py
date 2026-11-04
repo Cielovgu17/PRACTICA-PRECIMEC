@@ -1,0 +1,8 @@
+"""Error que la API convierte en una respuesta JSON con un mensaje para la persona."""
+
+
+class ApiError(Exception):
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
+        self.message = message

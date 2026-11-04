@@ -1,0 +1,134 @@
+/* El instructivo: pasos a la izquierda y visor a la derecha, en una sola pantalla. */
+.guide { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(380px, 460px) minmax(0, 1fr); gap: var(--gap); padding: var(--gap); }
+.guide-steps { min-height: 0; display: flex; flex-direction: column; gap: 12px; }
+.guide-head { flex: none; display: flex; flex-direction: column; gap: 10px; }
+.guide-progress { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 12px; font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.guide-progress strong { color: var(--text); font-weight: 600; }
+.guide-scroll { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding-right: 4px; }
+.guide-intro { font-size: 14px; color: var(--muted); white-space: pre-line; }
+.guide-pager { flex: none; display: flex; justify-content: space-between; gap: 8px; }
+.guide-pager .btn { flex: 1; }
+.guide-viewer { min-width: 0; min-height: 0; display: flex; }
+.guide-viewer .viewer { flex: 1; }
+
+/* Tarjetas de pasos */
+.steps { display: flex; flex-direction: column; gap: 6px; }
+.step-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card); transition: border-color .15s; }
+.step-card.is-open { border-color: var(--navy); }
+.step-head { width: 100%; display: flex; align-items: flex-start; gap: 10px; padding: 11px 12px; background: none; border: 0; border-radius: var(--radius-card); text-align: left; font-weight: 500; line-height: 1.35; cursor: pointer; transition: background-color .15s; }
+.step-head:hover { background: var(--raised); }
+.step-head[aria-current="step"]:hover { background: none; }
+.step-head.is-child { padding: 8px 12px; font-weight: 400; font-size: 14px; }
+.step-number { flex: none; min-width: 22px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.step-title { min-width: 0; flex: 1; }
+.step-chevron { flex: none; width: 18px; height: 18px; margin-top: 1px; color: var(--muted); transition: transform .25s cubic-bezier(.16, 1, .3, 1); }
+.step-chevron svg { display: block; width: 18px; height: 18px; }
+.step-chevron.is-open { transform: rotate(90deg); }
+.step-head:hover .step-chevron { color: var(--text); }
+.step-subs { margin: 0 0 6px 16px; }
+.step-subs .is-selected { background: var(--ground); border-radius: var(--radius-control); margin-right: 8px; }
+.step-detail { display: flex; flex-direction: column; gap: 10px; padding: 0 14px 14px 42px; }
+.step-subs .step-detail { padding-left: 42px; }
+.step-field h3, .step-note h3 { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+.step-field p, .step-note p { font-size: 14px; white-space: pre-line; }
+.step-note { padding: 8px 10px; background: var(--pill-sample-bg); color: var(--pill-sample-ink); border-radius: var(--radius-control); }
+.step-done { align-self: flex-start; }
+.step-done svg { width: 16px; height: 16px; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.chip { padding: 2px 8px; border: 1px solid var(--control); border-radius: var(--radius-chip); font-size: 13px; }
+.step-media a { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 14px; }
+.step-media svg { flex: none; width: 16px; height: 16px; color: var(--muted); }
+
+/* Modo edición */
+.edit-bar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 8px var(--gap); background: var(--navy); color: #fff; font-size: 14px; }
+.edit-status { color: var(--navy-muted); }
+.edit-bar-actions { margin-left: auto; display: flex; gap: 8px; }
+.edit-bar .btn { min-height: 34px; color: var(--text); }
+.edit-bar .btn:disabled { color: var(--faint); }
+.edit-bar .btn-primary { background: var(--orange); border-color: var(--orange); color: var(--navy); font-weight: 600; }
+.edit-bar .btn-primary:hover:not(:disabled) { background: #ff8a33; }
+.edit-bar .btn-primary:disabled { background: var(--navy-raised); border-color: var(--navy-line); color: var(--navy-muted); }
+.step-editor { gap: 12px; padding-left: 14px; }
+.step-subs .step-editor { padding-left: 14px; }
+.step-editor .field > label { font-size: 13px; }
+.step-editor .textarea { min-height: 72px; font-size: 14px; }
+.step-editor .input { font-size: 14px; }
+.edit-row-actions { display: flex; gap: 4px; }
+.edit-row-actions .btn-icon { width: 34px; min-height: 34px; }
+.edit-section { border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--surface); }
+.edit-section summary { padding: 9px 12px; font-size: 14px; font-weight: 500; cursor: pointer; }
+.edit-section summary:hover { background: var(--raised); }
+.edit-section-body { display: flex; flex-direction: column; gap: 10px; padding: 4px 12px 12px; }
+.edit-list { display: flex; flex-direction: column; gap: 6px; }
+.edit-animation { display: flex; flex-direction: column; gap: 8px; padding-bottom: 10px; border-bottom: 1px solid var(--rule); }
+.edit-image { display: flex; align-items: center; gap: 10px; }
+.edit-image img { flex: none; width: 96px; height: 60px; object-fit: contain; background: var(--navy); border-radius: var(--radius-chip); }
+.edit-image .field { flex: 1; }
+.edit-instrument { display: flex; align-items: center; gap: 8px; }
+.edit-instrument input[type="checkbox"] { flex: none; width: 18px; height: 18px; accent-color: var(--navy); }
+.edit-add { display: flex; gap: 8px; }
+.edit-scene { display: flex; flex-direction: column; gap: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--rule); }
+.edit-grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.edit-time { display: flex; gap: 6px; }
+.edit-time .input { flex: 1; min-width: 0; font-variant-numeric: tabular-nums; }
+.edit-time .btn { min-height: var(--control-height); padding: 4px 8px; font-size: 13px; white-space: nowrap; }
+.edit-add .input { flex: 1; min-width: 0; font-size: 14px; }
+
+/* Visor 3D */
+.viewer { display: flex; flex-direction: column; min-height: 0; background: var(--navy); color: #fff; border-radius: var(--radius-card); overflow: hidden; }
+.viewer-canvas { position: relative; flex: 1; min-height: 240px; overflow: hidden; }
+.viewer-canvas canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+.viewer-image { position: absolute; inset: 0; display: block; cursor: zoom-in; }
+.viewer-image img { width: 100%; height: 100%; object-fit: contain; }
+.viewer-empty { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 24px; }
+.viewer-reticle { position: absolute; inset: 0; width: 100%; height: 100%; color: var(--navy-raised); }
+.viewer-empty-copy { position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px; max-width: 300px; }
+.viewer-dot { width: 10px; height: 10px; margin-bottom: 8px; border-radius: 50%; background: var(--orange); }
+.viewer-empty-copy strong { font-size: 18px; font-weight: 600; }
+.viewer-empty-copy span { font-size: 14px; color: var(--navy-muted); }
+.viewer-tag { position: absolute; z-index: 2; top: 12px; left: 14px; right: 14px; font-size: 13px; color: var(--navy-muted); pointer-events: none; }
+.viewer-status { position: absolute; z-index: 3; left: 50%; top: 50%; transform: translate(-50%, -50%); padding: 8px 14px; background: var(--navy-raised); border-radius: var(--radius-control); font-size: 14px; text-align: center; font-variant-numeric: tabular-nums; }
+.viewer-tip { position: absolute; z-index: 4; padding: 5px 10px; background: #fff; color: var(--text); border-radius: var(--radius-control); font-size: 14px; font-weight: 500; white-space: nowrap; box-shadow: 0 4px 14px rgba(2, 26, 53, .35); pointer-events: none; }
+/* Cómo mover el modelo: franja fija entre el modelo y los controles, sin tapar nada */
+.viewer-hint { flex: none; padding: 7px 12px; border-top: 1px solid var(--navy-line); background: var(--navy); }
+.viewer-hint ul { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 20px; }
+.viewer-hint li { display: flex; align-items: center; gap: 6px; font-size: 13px; line-height: 1.3; color: var(--navy-muted); }
+.viewer-hint svg { flex: none; width: 20px; height: 20px; color: #fff; }
+.viewer-hint strong { font-weight: 600; color: #fff; }
+.viewer-legend { position: absolute; z-index: 2; left: 12px; bottom: 12px; display: flex; flex-wrap: wrap; gap: 4px; max-width: calc(100% - 24px); }
+.viewer-legend button { min-height: 32px; padding: 4px 10px; background: var(--navy-raised); border: 1px solid var(--navy-line); border-radius: var(--radius-control); color: #fff; font-size: 13px; cursor: pointer; transition: background-color .15s; }
+.viewer-legend button:hover { background: var(--navy-line); }
+.viewer-legend button[aria-pressed="true"] { background: var(--orange); border-color: var(--orange); color: var(--navy); font-weight: 500; }
+.viewer-legend button:focus-visible { outline-color: var(--orange); }
+.viewer-sources { flex: none; display: flex; gap: 6px; padding: 8px 10px 0; overflow-x: auto; }
+.viewer-source { flex: none; min-height: 32px; padding: 5px 10px; border: 1px solid var(--navy-line); border-radius: var(--radius-control); background: none; color: var(--navy-muted); font-size: 13px; cursor: pointer; transition: background-color .15s, color .15s; }
+.viewer-source:hover { color: #fff; }
+.viewer-source:focus-visible { outline-color: var(--orange); }
+.viewer-source[aria-pressed="true"] { background: var(--navy-raised); color: #fff; }
+.viewer-bar { flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; padding: 8px 10px; background: var(--navy-raised); }
+.viewer-group { display: flex; align-items: center; gap: 2px; }
+.viewer-animation { flex: 1; min-width: 220px; }
+.viewer-btn { min-width: 36px; height: 36px; padding: 0 8px; display: inline-grid; place-items: center; background: none; border: 0; border-radius: var(--radius-control); color: #fff; font-size: 13px; font-variant-numeric: tabular-nums; cursor: pointer; transition: background-color .15s; }
+.viewer-btn svg { width: 18px; height: 18px; }
+.viewer-btn:hover { background: var(--navy-line); }
+.viewer-btn:focus-visible { outline-color: var(--orange); }
+/* La barra de tiempo se ve fina, pero su zona para tocar y arrastrar mide 28 px de alto. */
+.viewer-time { flex: 1; min-width: 80px; height: 28px; margin: 0 8px; accent-color: var(--orange); cursor: pointer; }
+.viewer-time:focus-visible { outline-color: var(--orange); }
+
+.back-link { font-size: 14px; color: var(--muted); }
+
+/* Pantalla ancha: cada columna hace su propio desplazamiento */
+@media (min-width: 900px) {
+  #app.is-learning { height: 100dvh; overflow: hidden; }
+}
+/* Tableta vertical y teléfono: la animación arriba y los pasos debajo */
+@media (max-width: 899px) {
+  .guide { grid-template-columns: minmax(0, 1fr); padding: 12px; }
+  .guide-viewer { order: -1; position: sticky; top: 0; z-index: 5; height: 46dvh; min-height: 300px; }
+  .guide-scroll { overflow: visible; padding-right: 0; }
+  .guide-pager { position: sticky; bottom: 0; z-index: 4; margin: 0 -12px -12px; padding: 8px 12px; background: var(--surface); border-top: 1px solid var(--border); }
+  .viewer-btn { min-width: 40px; height: 40px; }
+  .viewer-legend button { min-height: 36px; }
+  .step-head { min-height: 44px; }
+}

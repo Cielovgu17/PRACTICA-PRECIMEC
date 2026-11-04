@@ -1,0 +1,8 @@
+data/
+publicar/
+__pycache__/
+.vercel/
+.env
+*.db
+*.db-*
+*.zip
