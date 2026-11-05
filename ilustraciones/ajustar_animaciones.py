@@ -22,16 +22,21 @@ import sys
 
 import numpy as np
 
-PIN_EXTRA = float(__import__("os").environ.get("PIN_EXTRA", 0.150))  # metros que el pin entra de más
+PIN_EXTRA = float(__import__("os").environ.get("PIN_EXTRA", 0.110))  # metros que el pin entra de más
 PIN_AXIS = np.array([-0.0488, 0.9987, 0.0170])      # dirección del pin, de la punta hacia arriba
 PIN_AXIS = PIN_AXIS / np.linalg.norm(PIN_AXIS)
 ENTRY_Y = 0.2135                                    # altura del punto de entrada en el trocánter mayor
 ENTRY = np.array([-0.0039, 0.2043, -0.0007])        # punto de entrada (centro del orificio del abridor)
 # Eje del canal medular: recta por el punto de entrada ajustada a los centros del canal entre y=-0,10 y 0,12.
 # El pin, el protector, la broca y el perforador se giran (~2°) alrededor de la entrada para seguirlo.
-CANAL_AXIS = np.array([-0.0188, 0.9998, -0.0012])
+# Ajustado además 1° y 0,5° para que la broca y el pin queden lo más centrados posible en el hueso y el canal.
+CANAL_AXIS = np.array([-0.02752, 0.99949, 0.01625])
 CANAL_AXIS = CANAL_AXIS / np.linalg.norm(CANAL_AXIS)
-DRILL_STOP_Y = float(__import__("os").environ.get("DRILL_STOP_Y", 0.155))  # la punta de la broca no baja de aquí
+# El protector de tejidos se apoya sobre el hueso (antes entraba 17,5 mm en él): se sube a lo largo del eje.
+PROTECTOR_LIFT = 0.0175
+# La broca baja hasta que su tope toca el borde superior de la camisa del protector: en la animación original
+# eso ocurre con la punta en y=0,1203; con el protector 17,5 mm más arriba, el tope toca 17,5 mm antes.
+DRILL_STOP_Y = float(__import__("os").environ.get("DRILL_STOP_Y", 0.1203 + PROTECTOR_LIFT))
 TINY = 1e-4
 
 
@@ -111,17 +116,20 @@ ALIGN = quat_between(PIN_AXIS, CANAL_AXIS)
 def realign(g, clip, names):
     """Gira cada pieza (su recorrido completo) alrededor del punto de entrada para seguir el eje del canal."""
     R = quat_matrix(ALIGN)
+    done = set()  # Blender guarda una sola vez los movimientos idénticos: cada dato se gira una sola vez
     for name in names:
         node = g.node(name)
         moved = False
         tr = g.track(clip, name, "translation")
-        if tr:
+        if tr and tr[1] not in done:
             values = g.array(tr[1]).astype(float)
             g.set_array(tr[1], (ENTRY + (values - ENTRY) @ R.T).astype(np.float32))
-            moved = True
+            done.add(tr[1])
+        moved = bool(tr)
         ro = g.track(clip, name, "rotation")
-        if ro:
+        if ro and ro[1] not in done:
             g.set_array(ro[1], quat_mul(ALIGN, g.array(ro[1]).astype(float)).astype(np.float32))
+            done.add(ro[1])
         t = np.array(node.get("translation", [0, 0, 0]), float)
         node["translation"] = (ENTRY + R @ (t - ENTRY)).tolist()
         q = np.array(node.get("rotation", [0, 0, 0, 1]), float)
@@ -143,10 +151,12 @@ def paso32(g):
     final = pin[-1, 1]
     # Avance extra proporcional a lo que el pin ya entró en el hueso (0 afuera, 1 al final).
     progress = np.clip((ENTRY_Y - pin[:, 1]) / (ENTRY_Y - final), 0, 1)
+    done = set()
     for name in ("Threaded_Guide_Pin_3.2x400.001", "Mango_de_acoplamiento.001", "Llave_portabrocas.001"):
         found = g.track(clip, name, "translation")
-        if not found:
+        if not found or found[1] in done:
             continue
+        done.add(found[1])
         ti, oi = found
         own_t = g.array(ti)[:, 0]
         g.set_array(oi, shift(g.array(oi).copy(), np.interp(own_t, t, progress)))
@@ -156,9 +166,14 @@ def paso32(g):
 def paso33(g):
     clip = g.clip("Paso3_retiro_mandril_insercion_protector")
     realign(g, clip, ["Threaded_Guide_Pin_3.2x400.002", "Mango_de_acoplamiento.002", "Llave_portabrocas.002", "Protector_de_tejidos"])
+    found = g.track(clip, "Protector_de_tejidos", "translation")
+    g.set_array(found[1], (g.array(found[1]).astype(float) + PROTECTOR_LIFT * CANAL_AXIS).astype(np.float32))
+    print("3.3: protector apoyado sobre el hueso (", PROTECTOR_LIFT * 1000, "mm más arriba)")
+    done = set()
     for name in ("Threaded_Guide_Pin_3.2x400.002", "Mango_de_acoplamiento.002", "Llave_portabrocas.002"):
         found = g.track(clip, name, "translation")
-        if found:
+        if found and found[1] not in done:
+            done.add(found[1])
             values = g.array(found[1]).copy()
             g.set_array(found[1], shift(values, np.ones(len(values))))
         node = g.node(name)
@@ -171,6 +186,8 @@ def paso34(g):
     clip = g.clip("Paso4_broca_canulada_perforador_hasta_tope")
     realign(g, clip, ["Threaded_Guide_Pin_3.2x400", "Protector_de_tejidos_camisa", "Broca_canulada_16.5",
                       "Perforador_quirurgico", "Llave_en_T_portabrocas", "Tunel_broca_16.5"])
+    camisa = g.node("Protector_de_tejidos_camisa")
+    camisa["translation"] = (np.array(camisa["translation"]) + PROTECTOR_LIFT * CANAL_AXIS).tolist()
     pin = g.node("Threaded_Guide_Pin_3.2x400")
     pin["translation"] = shift(np.array([pin["translation"]]), np.ones(1))[0].tolist()
     # Momento en que la punta de la broca llega a DRILL_STOP_Y: desde ahí broca y perforador quedan quietos.
@@ -184,8 +201,12 @@ def paso34(g):
     k = below[0]
     f = (drill[k - 1, 1] - DRILL_STOP_Y) / (drill[k - 1, 1] - drill[k, 1])
     stop_time = t[k - 1] + f * (t[k] - t[k - 1])
+    held_done = set()
     for name in ("Broca_canulada_16.5", "Perforador_quirurgico"):
         tj, oj = g.track(clip, name, "translation")
+        if oj in held_done:
+            continue
+        held_done.add(oj)
         tt = g.array(tj)[:, 0]
         values = g.array(oj).copy()
         held = np.array([np.interp(stop_time, tt, values[:, c]) for c in range(3)])

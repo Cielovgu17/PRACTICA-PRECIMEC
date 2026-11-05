@@ -5,8 +5,9 @@ estas son copias con las correcciones aplicadas por las herramientas de `ilustra
 
 - `femur_limpio.py`: fémur con superficie continua y diáfisis con contornos suaves.
 - `ajustar_animaciones.py`: en los pasos 3.2, 3.3 y 3.4 el pin guía, el protector, la broca y el perforador se giran
-  ~2° alrededor del punto de entrada para seguir el eje del canal medular; el pin entra 15 cm más (queda dentro
-  del canal y por debajo del perforador) y la broca canulada de Φ16,5 mm se detiene donde queda dentro del hueso.
+  ~3° alrededor del punto de entrada para seguir el eje del canal medular. El pin llega a 250 mm desde la entrada
+  (1 cm más que el clavo de Φ9,4 × 240 mm), el protector de tejidos queda apoyado sobre el hueso y la broca
+  canulada de Φ16,5 mm baja hasta que su tope toca la camisa del protector.
 
 | Archivo | Paso |
 |---|---|
