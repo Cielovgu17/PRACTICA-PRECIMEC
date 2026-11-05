@@ -57,8 +57,6 @@ SCENES = {
         + f'<path d="M 1158.9 543.6 A 270 270 0 0 0 1153.0 487.5" fill="none" stroke="{ORANGE}" stroke-width="5"/>'
         + text(1405, 556, "10° a 15°", 34, ORANGE, 600)
         + pointer(1200, 478, 1260, 690, ORANGE) + text(1272, 702, ["Miembro afectado", "aducido"], 34, ORANGE)
-        + text(72, 812, "Reducir (alinear) la fractura", 40, WHITE, 600)
-        + text(72, 860, "Aducir el miembro afectado de 10° a 15°.", 28, MUTED, 400)
         + note(w, h)
     ), 2808 / 1600),
 }

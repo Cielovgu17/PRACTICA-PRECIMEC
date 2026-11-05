@@ -5,6 +5,8 @@ import * as THREE from '/vendor/three/three.module.js';
 import { GLTFLoader } from '/vendor/three/GLTFLoader.js';
 import { RoomEnvironment } from '/vendor/three/RoomEnvironment.js';
 import { RoundedBoxGeometry } from '/vendor/three/RoundedBoxGeometry.js';
+import { STLLoader } from '/vendor/three/STLLoader.js';
+import { mergeVertices } from '/vendor/three/BufferGeometryUtils.js';
 
 const W = 1600;
 const H = 1000;
@@ -364,6 +366,36 @@ function perspective(position, target, { fov = 30, up = [0, 1, 0] } = {}) {
   return camera;
 }
 
+
+// ---------- Plantilla radiográfica (modelo de Cielo) ----------
+// STL en milímetros: 25 de ancho (x), 246 de largo (y, proximal arriba), 2 de grosor (z).
+// Ranura del ángulo cuello-diáfisis centrada en y = 205 mm; corchetes de diámetro (centro y):
+// 12 mm a 74.5, 11 mm a 95, 10 mm a 115.5 y 9.4 mm a 136; muescas de largo cada 20 mm abajo.
+const TEMPLATE = { slotY: 0.205, bracket12Y: 0.0745, length: 0.246, halfWidth: 0.0125 };
+let templateGeometry = null;
+
+async function loadTemplate() {
+  if (templateGeometry) return;
+  const buffer = await (await fetch('/ilustraciones3d/plantilla.stl')).arrayBuffer();
+  templateGeometry = new STLLoader().parse(buffer);
+  templateGeometry.scale(0.001, 0.001, 0.001);
+  templateGeometry.computeVertexNormals();
+}
+
+// La plantilla es de acetato transparente: se ve el hueso a través y los cortes quedan marcados.
+function radiographicTemplate({ mirror = false, opacity = 0.5 } = {}) {
+  const group = new THREE.Group();
+  const sheet = new THREE.Mesh(templateGeometry, new THREE.MeshPhysicalMaterial({
+    color: 0xf7a35c, roughness: 0.3, transparent: true, opacity, depthWrite: false, side: THREE.DoubleSide,
+    emissive: ORANGE, emissiveIntensity: 0.18,
+  }));
+  group.add(sheet);
+  const edges = new THREE.LineSegments(new THREE.EdgesGeometry(templateGeometry, 25), new THREE.LineBasicMaterial({ color: 0xff8a33 }));
+  group.add(edges);
+  if (mirror) group.scale.x = -1;
+  return group;
+}
+
 // ---------- Fémur del modelo ----------
 
 let femurGeometries = null;
@@ -382,13 +414,51 @@ async function loadFemur() {
     if (node.name.startsWith('Femur')) femurGeometries.push(node.geometry.clone().applyMatrix4(node.matrixWorld));
     if (node.name.startsWith('Canal')) canalGeometry = node.geometry.clone().applyMatrix4(node.matrixWorld);
   });
+  femurGeometries = femurGeometries.map(closeEntry);
   femurGeometries.forEach((g) => g.computeVertexNormals());
   canalGeometry.computeVertexNormals();
 }
 
+// El modelo trae abierto el orificio de entrada (resultado de la apertura del canal, etapa posterior).
+// Aquí se rellena el borde de esa abertura con una tapa, para que el fémur se vea entero y normal.
+function closeEntry(source) {
+  let geometry = source.clone();
+  for (const name of Object.keys(geometry.attributes)) if (name !== 'position') geometry.deleteAttribute(name);
+  geometry = mergeVertices(geometry, 1e-6);
+  const index = Array.from(geometry.index.array);
+  const pos = geometry.attributes.position;
+  const count = new Map();
+  const directed = [];
+  for (let i = 0; i < index.length; i += 3) {
+    for (let k = 0; k < 3; k += 1) {
+      const a = index[i + k];
+      const b = index[i + ((k + 1) % 3)];
+      const key = a < b ? `${a}_${b}` : `${b}_${a}`;
+      count.set(key, (count.get(key) || 0) + 1);
+      directed.push([a, b, key]);
+    }
+  }
+  const near = (i) => Math.hypot(pos.getX(i) - ENTRY_HOLE.x, pos.getY(i) - ENTRY_HOLE.y, pos.getZ(i) - ENTRY_HOLE.z) < 0.02;
+  const rim = directed.filter(([a, b, key]) => count.get(key) === 1 && near(a) && near(b));
+  if (!rim.length) return source;
+  const center = new THREE.Vector3();
+  const used = new Set();
+  rim.forEach(([a, b]) => { used.add(a); used.add(b); });
+  used.forEach((i) => center.add(new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i))));
+  center.divideScalar(used.size);
+  const positions = Array.from(pos.array);
+  const c = positions.length / 3;
+  positions.push(center.x, center.y + 0.0006, center.z);
+  rim.forEach(([a, b]) => index.push(b, a, c));
+  const closed = new THREE.BufferGeometry();
+  closed.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  closed.setIndex(index);
+  return closed;
+}
+
 // El modelo trae ya abierto el orificio de entrada (es el resultado de la etapa 5).
 // En las etapas anteriores el hueso aún está cerrado, así que se tapa.
-function femur(material = M.bone, { mirror = false, closed = true } = {}) {
+function femur(material = M.bone, { mirror = false, closed = false } = {}) {
   const group = new THREE.Group();
   femurGeometries.forEach((geometry) => {
     const mesh = new THREE.Mesh(geometry, material);
@@ -414,6 +484,7 @@ const boneDouble = () => std(0xeadfca, 0.58, 0, { side: THREE.DoubleSide });
 const boneGlass = (opacity) => new THREE.MeshPhysicalMaterial({ color: 0xeadfca, roughness: 0.5, transparent: true, opacity, depthWrite: false, side: THREE.DoubleSide });
 
 // Puntos medidos en el modelo (metros)
+const ENTRY_HOLE = new THREE.Vector3(-0.004, 0.205, -0.001);
 const ENTRY = new THREE.Vector3(-0.004, 0.2135, -0.001);
 const SHAFT_X = 0.002;
 const LESSER_Y = 0.138;
@@ -662,33 +733,18 @@ const ESCENAS = {
     }
     scene.add(tube(arcPoints, 0.0018, M.orange));
     scene.add(ball(0.003, M.orange, [corner[0], corner[1], 0.05]));
-    // Plantilla transparente
-    const texture = canvasTexture(560, 760, (ctx) => {
-      ctx.clearRect(0, 0, 560, 760);
-      ctx.strokeStyle = '#f56f0d';
-      ctx.lineWidth = 3;
-      ctx.strokeRect(4, 4, 552, 752);
-      for (let i = 0; i < 30; i += 1) {
-        ctx.beginPath();
-        ctx.moveTo(i % 5 ? 524 : 500, 26 + i * 24);
-        ctx.lineTo(552, 26 + i * 24);
-        ctx.stroke();
-      }
-    });
-    const sheet = new THREE.Mesh(new THREE.PlaneGeometry(0.17, 0.235), new THREE.MeshBasicMaterial({ map: texture, transparent: true, opacity: 0.9, depthWrite: false, side: THREE.DoubleSide }));
-    sheet.position.set(0.0, 0.115, 0.058);
-    scene.add(sheet);
-    const tint = new THREE.Mesh(new THREE.PlaneGeometry(0.17, 0.235), new THREE.MeshBasicMaterial({ color: ORANGE, transparent: true, opacity: 0.06, depthWrite: false }));
-    tint.position.set(0.0, 0.115, 0.057);
-    scene.add(tint);
+    // Plantilla radiográfica: la ranura del ángulo queda sobre el eje del cuello (hueso izquierdo, por eso en espejo).
+    await loadTemplate();
+    const plantilla = radiographicTemplate({ mirror: true, opacity: 0.45 });
+    plantilla.position.set(corner[0] + 0.0003, corner[1] - TEMPLATE.slotY, 0.046);
+    scene.add(plantilla);
     const camera = perspective([0.0, 0.1, 0.62], [0.0, 0.135, 0], { fov: 34 });
     render(scene, camera);
     const p = projector(camera);
     title('Estimar el ángulo cuello-diáfisis', 'Con la plantilla ubicada en la pierna sana.');
     const mid = (start + finish) / 2;
     callout(p([corner[0] + Math.cos(mid) * 0.032, corner[1] + Math.sin(mid) * 0.032, 0.05]), 240, 470, ['Ángulo', 'cuello-diáfisis'], { color: C.orange, anchor: 'end', size: 32 });
-    const right = p([0.085, 0.03, 0.058]);
-    callout(right, 1160, 650, 'Plantilla radiográfica', { color: C.orange });
+    callout(p([corner[0] + TEMPLATE.halfWidth, corner[1] - 0.075, 0.048]), 1160, 650, 'Plantilla radiográfica', { color: C.orange });
     callout(p([0.02, 0.06, 0.02]), 1160, 480, ['Fémur de la', 'pierna sana']);
     note();
   },
@@ -697,21 +753,29 @@ const ESCENAS = {
     const scene = new THREE.Scene();
     floorAndLights(scene, { key: [1, 2, 3], span: 0.7, floorY: -2 });
     scene.add(femur(M.bone));
-    const tipY = -0.165;
-    const ruler = box(0.028, ENTRY.y - tipY + 0.024, 0.004, new THREE.MeshPhysicalMaterial({ color: 0xf7a35c, roughness: 0.35, transparent: true, opacity: 0.6, emissive: ORANGE, emissiveIntensity: 0.25 }), [0.09, (ENTRY.y + tipY) / 2, 0.02]);
-    scene.add(ruler);
-    for (let y = tipY; y <= ENTRY.y + 0.0001; y += 0.02) scene.add(rod([0.076, y, 0.024], [0.09, y, 0.024], 0.0006, M.white));
-    scene.add(ball(0.0055, M.orange, ENTRY.toArray()));
-    scene.add(ball(0.0055, M.orange, [SHAFT_X, tipY, 0.02]));
-    scene.add(rod(ENTRY.toArray(), [0.076, ENTRY.y, 0.02], 0.0008, M.orange));
-    scene.add(rod([SHAFT_X, tipY, 0.02], [0.076, tipY, 0.02], 0.0008, M.orange));
+    // Plantilla frente al fémur: su parte proximal en el punto de entrada y la distal en la posición esperada.
+    await loadTemplate();
+    // Va del punto de entrada hacia el centro de la diáfisis (el eje del fémur está un poco inclinado).
+    const tipX = 0.0135;
+    const tilt = Math.atan2(tipX - ENTRY.x, TEMPLATE.length);
+    const tipY = ENTRY.y - TEMPLATE.length * Math.cos(tilt);
+    const holderT = new THREE.Group();
+    holderT.position.set(ENTRY.x, ENTRY.y, 0.055);
+    holderT.rotation.z = tilt;
+    const plantilla = radiographicTemplate({ opacity: 0.5 });
+    plantilla.position.y = -TEMPLATE.length;
+    holderT.add(plantilla);
+    scene.add(holderT);
+    const edge = TEMPLATE.halfWidth;
+    scene.add(ball(0.0055, M.orange, [ENTRY.x, ENTRY.y, 0.058]));
+    scene.add(ball(0.0055, M.orange, [tipX, tipY, 0.058]));
     const camera = perspective([0.23, 0.0, 1.05], [0.15, 0, 0], { fov: 28 });
     render(scene, camera);
     const p = projector(camera);
     title('Leer el largo del clavo', 'Plantilla frente al fémur.', 860);
-    callout(p([0.104, ENTRY.y, 0.02]), 860, 290, ['Parte proximal:', 'en el punto de entrada'], { color: C.orange, size: 32 });
-    callout(p([0.104, 0.02, 0.02]), 860, 510, 'Se lee el largo del clavo', { size: 32 });
-    callout(p([0.104, tipY, 0.02]), 860, 800, ['Parte distal:', 'en la posición esperada'], { color: C.orange, size: 32 });
+    callout(p([ENTRY.x + edge, ENTRY.y - 0.004, 0.057]), 860, 290, ['Parte proximal:', 'en el punto de entrada'], { color: C.orange, size: 32 });
+    callout(p([(ENTRY.x + tipX) / 2 + edge, (ENTRY.y + tipY) / 2, 0.057]), 860, 510, ['Plantilla radiográfica:', 'se lee el largo del clavo'], { size: 32 });
+    callout(p([tipX + edge, tipY + 0.004, 0.057]), 860, 760, ['Parte distal:', 'en la posición esperada'], { color: C.orange, size: 32 });
     note();
   },
   async '3-3-diametro-del-canal'() {
@@ -722,6 +786,11 @@ const ESCENAS = {
     scene.add(femur(shell));
     const canalMesh = canal();
     scene.add(canalMesh);
+    await loadTemplate();
+    const level0 = 0.02;
+    const plantillaA = radiographicTemplate({ opacity: 0.4 });
+    plantillaA.position.set(-0.0005, level0 - TEMPLATE.bracket12Y, 0.04);
+    scene.add(plantillaA);
     const left = { x: 40, y: 0, w: 560, h: 1000 };
     const overview = new THREE.PerspectiveCamera(30, left.w / left.h, 0.02, 10);
     overview.position.set(0.012, 0, 0.98);
@@ -736,6 +805,9 @@ const ESCENAS = {
     scene2.add(femur(std(0xeadfca, 0.6, 0, { side: THREE.DoubleSide, clippingPlanes: clip })));
     scene2.add(shadowed(new THREE.Mesh(canalGeometry, std(0xc77b4a, 0.6, 0, { clippingPlanes: clip, side: THREE.DoubleSide }))));
     const level = 0.02;
+    const plantillaB = radiographicTemplate({ opacity: 0.35 });
+    plantillaB.position.set(-0.0005, level - TEMPLATE.bracket12Y, 0.03);
+    scene2.add(plantillaB);
     const leftWall = -0.0068;
     const rightWall = 0.0059;
     scene2.add(tube([[leftWall, level, 0.012], [rightWall, level, 0.012]], 0.0008, M.orange));
@@ -755,7 +827,8 @@ const ESCENAS = {
     add('line', { x1: b[0], y1: b[1], x2: zoom.x, y2: zoom.y + zoom.h, stroke: C.orange, 'stroke-width': 2 });
     add('rect', { x: zoom.x, y: zoom.y, width: zoom.w, height: zoom.h, fill: 'none', stroke: C.line, 'stroke-width': 2, rx: 8 });
     title('Estimar el diámetro del canal', 'Con la plantilla, para elegir el diámetro del clavo.', 700);
-    callout(pz([rightWall, level, 0.012]), 1345, 440, 'Diámetro', { color: C.orange, size: 32 });
+    callout(pz([0.0085, level + 0.0068, 0.032]), 1345, 300, ['Corchete de la', 'plantilla (12 mm)'], { color: C.orange, size: 28 });
+    callout(pz([rightWall, level, 0.012]), 1345, 470, 'Diámetro', { color: C.orange, size: 32 });
     callout(pz([-0.0005, level - 0.03, 0.005]), 1345, 690, ['Canal', 'intramedular'], { size: 28 });
     chip(700, 880, 'Clavo principal: Φ9.4, 10, 11 o 12 mm');
     note();

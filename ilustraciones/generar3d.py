@@ -27,7 +27,7 @@ def main():
             subprocess.run([
                 str(edge), "--headless=new", "--no-first-run", f"--user-data-dir={tmp}/perfil",
                 "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist",
-                "--hide-scrollbars", "--virtual-time-budget=45000", "--window-size=1600,1000",
+                "--hide-scrollbars", "--virtual-time-budget=90000", "--window-size=1600,1000",
                 f"--screenshot={target}", f"{BASE}?escena={name}",
             ], check=True, timeout=240, capture_output=True)
             print(name, target.stat().st_size)
