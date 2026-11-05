@@ -96,7 +96,9 @@ export class Engine3D {
   }
 
   applyTime() {
-    if (this.mixer) this.mixer.setTime(this.time);
+    // El clip se reproduce en modo repetición: justo en su último instante volvería a la pose inicial.
+    // Por eso nunca se pide el instante exacto del final, sino uno apenas antes (el último cuadro).
+    if (this.mixer) this.mixer.setTime(Math.min(this.time, Math.max(0, (this.clip?.duration ?? 0) - 1e-3)));
   }
 
   async fetchBuffer(url, onProgress) {
