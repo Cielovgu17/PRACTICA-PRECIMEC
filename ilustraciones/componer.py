@@ -38,7 +38,7 @@ def note(w, h, anchor="end"):
     return text(x, h - 30, "Ilustración generada con IA, esquemática", 22, MUTED, 400, anchor)
 
 
-# nombre final: (imagen de fondo en ia/, (ancho, alto) del lienzo, textos)
+# nombre final: (imagen de fondo en ia/, (ancho, alto) del lienzo, textos[, escala de salida])
 SCENES = {
     "1-1-posicion-supina": ("1-1-posicion-supina-v3.png", (1600, 1143), lambda w, h: (
         pointer(608, 380, 890, 222) + text(900, 214, ["Paciente boca arriba", "(posición supina)"], 36)
@@ -50,21 +50,17 @@ SCENES = {
         + pointer(336, 418, 230, 262) + text(90, 246, "Monitor", 36)
         + note(w, h)
     )),
-    # Fondo hecho con piernas.py: pierna afectada aducida ~12° y pierna sana bien separada.
-    "1-3-reducir-fractura": ("1-3-reducir-fractura-v3.png", (1600, 904), lambda w, h: (
-        # Línea media del cuerpo y línea de referencia de la cadera afectada.
-        f'<line x1="1008" y1="448" x2="1440" y2="448" stroke="{MUTED}" stroke-width="2.5" stroke-dasharray="10 8"/>'
-        + text(1052, 434, "Línea media del cuerpo", 24, MUTED, 400)
-        + f'<line x1="1008" y1="556" x2="1395" y2="556" stroke="{ORANGE}" stroke-width="2.5" stroke-dasharray="10 8"/>'
-        + f'<line x1="1008" y1="556" x2="1330" y2="485" stroke="{ORANGE}" stroke-width="3"/>'
-        + f'<path d="M 1158 556 A 150 150 0 0 0 1154.5 523.8" fill="none" stroke="{ORANGE}" stroke-width="5"/>'
-        + text(1405, 568, "10° a 15°", 34, ORANGE, 600)
-        + pointer(1240, 488, 1270, 690, ORANGE) + text(1282, 702, ["Miembro afectado", "aducido"], 34, ORANGE)
-        + pointer(1089, 255, 1080, 150) + text(1068, 120, ["Miembro sano", "bien separado"], 34, WHITE, 500, "end")
+    # Fondo hecho con piernas.py: piernas rectas giradas desde la cadera (afectada aducida 12°, sana bien separada).
+    "1-3-reducir-fractura": ("1-3-reducir-fractura-v4.png", (1600, 904), lambda w, h: (
+        f'<line x1="1008" y1="543.6" x2="1395" y2="543.6" stroke="{ORANGE}" stroke-width="2.5" stroke-dasharray="10 8"/>'
+        + f'<line x1="1008.5" y1="518.1" x2="1330" y2="449.8" stroke="{ORANGE}" stroke-width="3"/>'
+        + f'<path d="M 1158.9 543.6 A 270 270 0 0 0 1153.0 487.5" fill="none" stroke="{ORANGE}" stroke-width="5"/>'
+        + text(1405, 556, "10° a 15°", 34, ORANGE, 600)
+        + pointer(1200, 478, 1260, 690, ORANGE) + text(1272, 702, ["Miembro afectado", "aducido"], 34, ORANGE)
         + text(72, 812, "Reducir (alinear) la fractura", 40, WHITE, 600)
         + text(72, 860, "Aducir el miembro afectado de 10° a 15°.", 28, MUTED, 400)
         + note(w, h)
-    )),
+    ), 2808 / 1600),
 }
 
 
@@ -72,7 +68,8 @@ def main():
     edge = Path(os.environ["ProgramFiles(x86)"]) / "Microsoft/Edge/Application/msedge.exe"
     only = set(sys.argv[1:])
     with tempfile.TemporaryDirectory() as tmp:
-        for name, (source, (w, h), overlay) in SCENES.items():
+        for name, (source, (w, h), overlay, *rest) in SCENES.items():
+            scale = rest[0] if rest else 1
             if only and name not in only:
                 continue
             background = HERE / "ia" / source
@@ -89,6 +86,7 @@ def main():
             subprocess.run([
                 str(edge), "--headless=new", "--disable-gpu", "--no-first-run", f"--user-data-dir={tmp}/perfil",
                 "--allow-file-access-from-files", "--hide-scrollbars", "--virtual-time-budget=4000",
+                f"--force-device-scale-factor={scale}",
                 f"--window-size={w},{h}", f"--screenshot={target}", page.as_uri(),
             ], check=True, timeout=90, capture_output=True)
             print(name, target.stat().st_size)
