@@ -755,26 +755,22 @@ const ESCENAS = {
     scene.add(femur(M.bone));
     // Plantilla frente al fémur: su parte proximal en el punto de entrada y la distal en la posición esperada.
     await loadTemplate();
-    // Va del punto de entrada hacia el centro de la diáfisis (el eje del fémur está un poco inclinado).
-    const tipX = 0.0135;
-    const tilt = Math.atan2(tipX - ENTRY.x, TEMPLATE.length);
-    const tipY = ENTRY.y - TEMPLATE.length * Math.cos(tilt);
-    const holderT = new THREE.Group();
-    holderT.position.set(ENTRY.x, ENTRY.y, 0.055);
-    holderT.rotation.z = tilt;
+    // Totalmente vertical, desde la punta del trocánter mayor hacia abajo. Se corre un poco hacia la
+    // diáfisis para que cubra a la vez el trocánter (arriba) y el centro del hueso (abajo).
+    const tipX = 0.008;
+    const tipY = ENTRY.y - TEMPLATE.length;
     const plantilla = radiographicTemplate({ opacity: 0.5 });
-    plantilla.position.y = -TEMPLATE.length;
-    holderT.add(plantilla);
-    scene.add(holderT);
+    plantilla.position.set(tipX, tipY, 0.055);
+    scene.add(plantilla);
     const edge = TEMPLATE.halfWidth;
-    scene.add(ball(0.0055, M.orange, [ENTRY.x, ENTRY.y, 0.058]));
+    scene.add(ball(0.0055, M.orange, [tipX, ENTRY.y, 0.058]));
     scene.add(ball(0.0055, M.orange, [tipX, tipY, 0.058]));
     const camera = perspective([0.23, 0.0, 1.05], [0.15, 0, 0], { fov: 28 });
     render(scene, camera);
     const p = projector(camera);
     title('Leer el largo del clavo', 'Plantilla frente al fémur.', 860);
-    callout(p([ENTRY.x + edge, ENTRY.y - 0.004, 0.057]), 860, 290, ['Parte proximal:', 'en el punto de entrada'], { color: C.orange, size: 32 });
-    callout(p([(ENTRY.x + tipX) / 2 + edge, (ENTRY.y + tipY) / 2, 0.057]), 860, 510, ['Plantilla radiográfica:', 'se lee el largo del clavo'], { size: 32 });
+    callout(p([tipX + edge, ENTRY.y - 0.004, 0.057]), 860, 290, ['Parte proximal:', 'en el punto de entrada'], { color: C.orange, size: 32 });
+    callout(p([tipX + edge, (ENTRY.y + tipY) / 2, 0.057]), 860, 510, ['Plantilla radiográfica:', 'se lee el largo del clavo'], { size: 32 });
     callout(p([tipX + edge, tipY + 0.004, 0.057]), 860, 760, ['Parte distal:', 'en la posición esperada'], { color: C.orange, size: 32 });
     note();
   },
