@@ -50,6 +50,21 @@ SCENES = {
         + pointer(336, 418, 230, 262) + text(90, 246, "Monitor", 36)
         + note(w, h)
     )),
+    # Fondo hecho con piernas.py: pierna afectada aducida ~12° y pierna sana bien separada.
+    "1-3-reducir-fractura": ("1-3-reducir-fractura-v3.png", (1600, 904), lambda w, h: (
+        # Línea media del cuerpo y línea de referencia de la cadera afectada.
+        f'<line x1="1008" y1="448" x2="1440" y2="448" stroke="{MUTED}" stroke-width="2.5" stroke-dasharray="10 8"/>'
+        + text(1052, 434, "Línea media del cuerpo", 24, MUTED, 400)
+        + f'<line x1="1008" y1="556" x2="1395" y2="556" stroke="{ORANGE}" stroke-width="2.5" stroke-dasharray="10 8"/>'
+        + f'<line x1="1008" y1="556" x2="1330" y2="485" stroke="{ORANGE}" stroke-width="3"/>'
+        + f'<path d="M 1158 556 A 150 150 0 0 0 1154.5 523.8" fill="none" stroke="{ORANGE}" stroke-width="5"/>'
+        + text(1405, 568, "10° a 15°", 34, ORANGE, 600)
+        + pointer(1240, 488, 1270, 690, ORANGE) + text(1282, 702, ["Miembro afectado", "aducido"], 34, ORANGE)
+        + pointer(1089, 255, 1080, 150) + text(1068, 120, ["Miembro sano", "bien separado"], 34, WHITE, 500, "end")
+        + text(72, 812, "Reducir (alinear) la fractura", 40, WHITE, 600)
+        + text(72, 860, "Aducir el miembro afectado de 10° a 15°.", 28, MUTED, 400)
+        + note(w, h)
+    )),
 }
 
 
