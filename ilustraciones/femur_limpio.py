@@ -65,6 +65,69 @@ def write_floats(data, offsets, values):
     raw[idx] = payload
 
 
+# ---------- Diáfisis: contornos continuos con curvas suaves ----------
+# El cuerpo del fémur (entre el trocánter menor y el ensanchamiento distal) se rehace a partir de su
+# propia forma: un eje central con una curva suave y, para cada lado del hueso, un radio que cambia de
+# manera continua a lo largo. Así las paredes quedan como líneas continuas con curvas ligeras (como en
+# las láminas de anatomía), sin bultos. Los extremos del hueso no se tocan y la unión es gradual.
+SHAFT_FULL = (-0.100, 0.095)   # metros en el eje largo (y): zona rehecha por completo
+SHAFT_BLEND = (-0.170, 0.128)  # hasta aquí se mezcla gradualmente con la forma original
+SHAFT_ANGLES = 48               # lados en que se divide la sección
+SHAFT_DEGREE = 4                # grado de la curva a lo largo de cada lado (curvas suaves)
+
+
+def _smoothstep(x, a, b):
+    t = np.clip((x - a) / (b - a), 0, 1)
+    return t * t * (3 - 2 * t)
+
+
+def shaft(P):
+    y = P[:, 1]
+    weight = np.minimum(_smoothstep(y, SHAFT_BLEND[0], SHAFT_FULL[0]), 1 - _smoothstep(y, SHAFT_FULL[1], SHAFT_BLEND[1]))
+    zone = weight > 0
+    if zone.sum() < 100:
+        return P
+    # Eje central: centro de cada rebanada, ajustado a una curva suave (cúbica).
+    bins = np.arange(SHAFT_BLEND[0] - 0.01, SHAFT_BLEND[1] + 0.01, 0.004)
+    centers = []
+    for lo in bins:
+        s = P[(y >= lo) & (y < lo + 0.004)]
+        if len(s) > 20:
+            centers.append((lo + 0.002, s[:, 0].mean(), s[:, 2].mean()))
+    centers = np.array(centers)
+    cx = np.polyfit(centers[:, 0], centers[:, 1], 3)
+    cz = np.polyfit(centers[:, 0], centers[:, 2], 3)
+    Q = P[zone]
+    qy = Q[:, 1]
+    dx, dz = Q[:, 0] - np.polyval(cx, qy), Q[:, 2] - np.polyval(cz, qy)
+    theta = np.arctan2(dz, dx)
+    radius = np.hypot(dx, dz)
+    # Radio de cada lado a lo largo del hueso: curva suave (polinomio) ajustada a los puntos del lado.
+    k = SHAFT_ANGLES
+    pos = (theta + np.pi) / (2 * np.pi) * k
+    side = np.floor(pos).astype(int) % k
+    coeffs = np.zeros((k, SHAFT_DEGREE + 1))
+    span = (SHAFT_BLEND[0] - 0.01, SHAFT_BLEND[1] + 0.01)
+    for i in range(k):
+        sel = (side == i) | (side == (i + 1) % k) | (side == (i - 1) % k)
+        sel &= (qy > span[0]) & (qy < span[1])
+        coeffs[i] = np.polyfit(qy[sel], radius[sel], SHAFT_DEGREE)
+    # Un leve alisado entre lados vecinos, para que la sección no quede facetada.
+    coeffs = (np.roll(coeffs, 1, 0) + 2 * coeffs + np.roll(coeffs, -1, 0)) / 4
+    frac = pos - np.floor(pos)
+    r0 = np.array([np.polyval(coeffs[s], v) for s, v in zip(side, qy)])
+    r1 = np.array([np.polyval(coeffs[(s + 1) % k], v) for s, v in zip(side, qy)])
+    # El ángulo de cada lado corresponde al centro de su franja: se interpola entre franjas vecinas.
+    centre_shift = frac - 0.5
+    r_left = np.array([np.polyval(coeffs[(s - 1) % k], v) for s, v in zip(side, qy)])
+    new_r = np.where(centre_shift >= 0, r0 + (r1 - r0) * centre_shift, r0 + (r0 - r_left) * centre_shift)
+    target = np.stack([np.polyval(cx, qy) + new_r * np.cos(theta), qy, np.polyval(cz, qy) + new_r * np.sin(theta)], axis=1)
+    w = weight[zone][:, None]
+    out = P.copy()
+    out[zone] = Q * (1 - w) + target * w
+    return out
+
+
 def refine(points, triangles):
     n = len(points)
     P = points.astype(np.float64)
@@ -93,7 +156,9 @@ def refine(points, triangles):
     soft = MAX_SHIFT * np.tanh(length / MAX_SHIFT)
     shift *= (soft / np.maximum(length, 1e-12))[:, None]
     P = original + shift
-    # Pasadas finales de Taubin para dejar la transición del tope sin marcas.
+    # Diáfisis con contornos continuos.
+    P = np.where(move, shaft(P), P)
+    # Pasadas finales de Taubin para dejar sin marcas las transiciones.
     for factor in [LAMBDA, MU] * 30:
         avg = np.stack([np.bincount(src, weights=P[dst, k], minlength=n) for k in range(3)], axis=1) / deg[:, None]
         P = np.where(move, P + factor * (avg - P), P)
