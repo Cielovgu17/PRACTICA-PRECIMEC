@@ -26,7 +26,12 @@ PIN_EXTRA = float(__import__("os").environ.get("PIN_EXTRA", 0.150))  # metros qu
 PIN_AXIS = np.array([-0.0488, 0.9987, 0.0170])      # dirección del pin, de la punta hacia arriba
 PIN_AXIS = PIN_AXIS / np.linalg.norm(PIN_AXIS)
 ENTRY_Y = 0.2135                                    # altura del punto de entrada en el trocánter mayor
-DRILL_STOP_Y = 0.158                                # la punta de la broca no baja de aquí
+ENTRY = np.array([-0.0039, 0.2043, -0.0007])        # punto de entrada (centro del orificio del abridor)
+# Eje del canal medular: recta por el punto de entrada ajustada a los centros del canal entre y=-0,10 y 0,12.
+# El pin, el protector, la broca y el perforador se giran (~2°) alrededor de la entrada para seguirlo.
+CANAL_AXIS = np.array([-0.0188, 0.9998, -0.0012])
+CANAL_AXIS = CANAL_AXIS / np.linalg.norm(CANAL_AXIS)
+DRILL_STOP_Y = float(__import__("os").environ.get("DRILL_STOP_Y", 0.155))  # la punta de la broca no baja de aquí
 TINY = 1e-4
 
 
@@ -74,12 +79,64 @@ class Glb:
         open(path, "wb").write(out)
 
 
+def quat_between(a, b):
+    """Cuaternión (x, y, z, w) que gira el vector a hasta el vector b."""
+    a, b = a / np.linalg.norm(a), b / np.linalg.norm(b)
+    axis = np.cross(a, b)
+    s = np.linalg.norm(axis)
+    angle = np.arctan2(s, a @ b)
+    axis = axis / s
+    return np.array([*(axis * np.sin(angle / 2)), np.cos(angle / 2)])
+
+
+def quat_mul(q, r):
+    x1, y1, z1, w1 = q
+    x2, y2, z2, w2 = r.T
+    return np.stack([w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+                     w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+                     w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+                     w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2], axis=1)
+
+
+def quat_matrix(q):
+    x, y, z, w = q
+    return np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                     [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                     [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+
+
+ALIGN = quat_between(PIN_AXIS, CANAL_AXIS)
+
+
+def realign(g, clip, names):
+    """Gira cada pieza (su recorrido completo) alrededor del punto de entrada para seguir el eje del canal."""
+    R = quat_matrix(ALIGN)
+    for name in names:
+        node = g.node(name)
+        moved = False
+        tr = g.track(clip, name, "translation")
+        if tr:
+            values = g.array(tr[1]).astype(float)
+            g.set_array(tr[1], (ENTRY + (values - ENTRY) @ R.T).astype(np.float32))
+            moved = True
+        ro = g.track(clip, name, "rotation")
+        if ro:
+            g.set_array(ro[1], quat_mul(ALIGN, g.array(ro[1]).astype(float)).astype(np.float32))
+        t = np.array(node.get("translation", [0, 0, 0]), float)
+        node["translation"] = (ENTRY + R @ (t - ENTRY)).tolist()
+        q = np.array(node.get("rotation", [0, 0, 0, 1]), float)
+        node["rotation"] = quat_mul(ALIGN, q[None, :])[0].tolist()
+        print(f"   girado: {name}{' (con su recorrido)' if moved else ''}")
+
+
 def shift(values, amount):
-    return values - PIN_EXTRA * amount[:, None] * PIN_AXIS[None, :]
+    return values - PIN_EXTRA * amount[:, None] * CANAL_AXIS[None, :]
 
 
 def paso32(g):
     clip = g.clip("Paso2_montaje_guia_mandril_insercion_canal")
+    realign(g, clip, ["Threaded_Guide_Pin_3.2x400.001", "Mango_de_acoplamiento.001", "Llave_portabrocas.001",
+                      "Eje_de_entrada.001", "Indicador_profundidad.001"])
     times, out = g.track(clip, "Threaded_Guide_Pin_3.2x400.001", "translation")
     t = g.array(times)[:, 0]
     pin = g.array(out).copy()
@@ -98,6 +155,7 @@ def paso32(g):
 
 def paso33(g):
     clip = g.clip("Paso3_retiro_mandril_insercion_protector")
+    realign(g, clip, ["Threaded_Guide_Pin_3.2x400.002", "Mango_de_acoplamiento.002", "Llave_portabrocas.002", "Protector_de_tejidos"])
     for name in ("Threaded_Guide_Pin_3.2x400.002", "Mango_de_acoplamiento.002", "Llave_portabrocas.002"):
         found = g.track(clip, name, "translation")
         if found:
@@ -111,6 +169,8 @@ def paso33(g):
 
 def paso34(g):
     clip = g.clip("Paso4_broca_canulada_perforador_hasta_tope")
+    realign(g, clip, ["Threaded_Guide_Pin_3.2x400", "Protector_de_tejidos_camisa", "Broca_canulada_16.5",
+                      "Perforador_quirurgico", "Llave_en_T_portabrocas", "Tunel_broca_16.5"])
     pin = g.node("Threaded_Guide_Pin_3.2x400")
     pin["translation"] = shift(np.array([pin["translation"]]), np.ones(1))[0].tolist()
     # Momento en que la punta de la broca llega a DRILL_STOP_Y: desde ahí broca y perforador quedan quietos.
@@ -118,6 +178,9 @@ def paso34(g):
     t = g.array(ti)[:, 0]
     drill = g.array(oi)
     below = np.nonzero(drill[:, 1] < DRILL_STOP_Y)[0]
+    if not len(below):
+        print(f"3.4: la broca nunca baja de y={DRILL_STOP_Y}; no hace falta detenerla")
+        return
     k = below[0]
     f = (drill[k - 1, 1] - DRILL_STOP_Y) / (drill[k - 1, 1] - drill[k, 1])
     stop_time = t[k - 1] + f * (t[k] - t[k - 1])
