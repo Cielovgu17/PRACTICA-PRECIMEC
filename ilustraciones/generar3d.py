@@ -11,6 +11,7 @@ from pathlib import Path
 
 OUT = Path(__file__).resolve().parent
 BASE = "http://127.0.0.1:8000/ilustraciones3d/index.html"
+EXTRA = os.environ.get("ESCENA_EXTRA", "")  # parámetros adicionales, p. ej. "&refinar=1"
 SCENES = [
     "etapa1-paciente-obeso", "1-1-posicion-supina", "1-2-intensificador", "2-1-aduccion", "2-2-fijar-miembro",
     "2-3-traccion", "3-1-angulo-cuello-diafisis", "3-2-largo-del-clavo", "3-3-diametro-del-canal",
@@ -28,7 +29,7 @@ def main():
                 str(edge), "--headless=new", "--no-first-run", f"--user-data-dir={tmp}/perfil",
                 "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist",
                 "--hide-scrollbars", "--virtual-time-budget=90000", "--window-size=1600,1000",
-                f"--screenshot={target}", f"{BASE}?escena={name}",
+                f"--screenshot={target}", f"{BASE}?escena={name}{EXTRA}",
             ], check=True, timeout=240, capture_output=True)
             print(name, target.stat().st_size)
 

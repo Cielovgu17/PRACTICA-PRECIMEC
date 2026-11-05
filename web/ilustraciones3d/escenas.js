@@ -711,6 +711,35 @@ const ESCENAS = {
     label(830, 850, 'Acortamiento', { size: 32 });
     note();
   },
+  // Revisión: el fémur tal como viene en el archivo (con sus normales originales), desde las cuatro caras.
+  async 'ver-femur'() {
+    const content = await (await fetch('/api/content')).json();
+    const params = new URLSearchParams(location.search);
+    const asset = Object.values(content.assets).find((item) => item.filename.startsWith(params.get('archivo') || 'apertura'));
+    const gltf = await new GLTFLoader().parseAsync(await (await fetch(params.get('url') || asset.url)).arrayBuffer(), '');
+    gltf.scene.updateMatrixWorld(true);
+    const bone = new THREE.Group();
+    gltf.scene.traverse((node) => {
+      if (node.isMesh && /^Femur/.test(node.name)) {
+        const mesh = new THREE.Mesh(node.geometry.clone().applyMatrix4(node.matrixWorld), M.bone);
+        bone.add(mesh);
+      }
+    });
+    const box3 = new THREE.Box3().setFromObject(bone);
+    const c = box3.getCenter(new THREE.Vector3());
+    const views = [['Anterior', [0, 0, 1]], ['Posterior', [0, 0, -1]], ['Interna', [1, 0, 0]], ['Externa', [-1, 0, 0]]];
+    views.forEach(([name, dir], i) => {
+      const scene = new THREE.Scene();
+      floorAndLights(scene, { key: [dir[0] + 0.3, 1.5, dir[2] + 0.3], span: 1, floorY: -2 });
+      scene.add(bone.clone());
+      const cam = new THREE.PerspectiveCamera(22, 400 / 1000, 0.01, 10);
+      cam.position.set(c.x + dir[0] * 1.3, c.y, c.z + dir[2] * 1.3);
+      cam.lookAt(c);
+      cam.updateMatrixWorld();
+      render(scene, cam, { x: i * 400, y: 0, w: 400, h: 1000 });
+      label(i * 400 + 20, 40, name, { size: 26, weight: 600 });
+    });
+  },
   async '3-1-angulo-cuello-diafisis'() {
     await loadFemur();
     const scene = new THREE.Scene();
