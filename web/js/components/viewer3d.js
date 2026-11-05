@@ -303,6 +303,10 @@ export class Engine3D {
     const size = box.getSize(new THREE.Vector3());
     this.center = box.getCenter(new THREE.Vector3());
     this.radius = Math.max(size.length() / 2, 0.001);
+    // La vista superior encuadra el hueso (si lo hay), no el recorrido del instrumental.
+    const bone = new THREE.Box3();
+    visible().filter((mesh) => /f[eé]mur/i.test(mesh.userData.piece)).forEach((mesh) => bone.expandByObject(mesh));
+    this.topBox = bone.isEmpty() ? box.clone() : bone;
     this.camera.near = this.radius / 100;
     this.camera.far = this.radius * 100;
     this.camera.updateProjectionMatrix();
@@ -314,16 +318,33 @@ export class Engine3D {
     // El campo de visión horizontal puede ser menor que el vertical en pantallas angostas: se usa el menor.
     const vertical = THREE.MathUtils.degToRad(this.camera.fov / 2);
     const horizontal = Math.atan(Math.tan(vertical) * Math.min(this.camera.aspect, 1));
-    const distance = (this.radius / Math.sin(Math.min(vertical, horizontal))) * 1.08;
+    const fov = Math.sin(Math.min(vertical, horizontal));
+    let center = this.center;
+    let distance = (this.radius / fov) * 1.08;
+    if (name === 'superior') {
+      // Desde arriba solo se ve el corte transversal: se encuadra su ancho, con la cámara sobre el extremo superior.
+      const size = this.topBox.getSize(new THREE.Vector3());
+      center = this.topBox.getCenter(new THREE.Vector3());
+      distance = size.y / 2 + (Math.max(Math.hypot(size.x, size.z) / 2, 0.001) / fov) * 1.08;
+    }
+    // Fémur derecho de las animaciones: arriba +y, medial +x, anterior +z.
+    // Anterior y posterior se ven como en un atlas (cabeza a la derecha y a la izquierda). En la vista superior
+    // la cámara queda apenas corrida hacia lateral: así la cabeza (medial) queda arriba en la pantalla y el
+    // trocánter mayor abajo, con el eje anteroposterior en horizontal.
     const direction = {
       iso: new THREE.Vector3(1, 0.7, 1),
-      front: new THREE.Vector3(0, 0, 1),
-      side: new THREE.Vector3(1, 0, 0),
-      top: new THREE.Vector3(0, 1, 0.001),
+      anterior: new THREE.Vector3(0, 0, 1),
+      posterior: new THREE.Vector3(0, 0, -1),
+      superior: new THREE.Vector3(-0.001, 1, 0),
     }[name].normalize();
-    this.camera.position.copy(this.center).addScaledVector(direction, distance);
-    this.controls.target.copy(this.center);
+    this.camera.position.copy(center).addScaledVector(direction, distance);
+    this.controls.target.copy(center);
     this.controls.update();
+  }
+
+  // Avisa cuando la persona empieza a girar o mover el modelo con el ratón o el dedo.
+  onOrbit(callback) {
+    this.controls.addEventListener('start', callback);
   }
 
   zoom(factor) {

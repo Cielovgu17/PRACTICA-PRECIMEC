@@ -88,6 +88,13 @@
 .viewer-empty-copy span { font-size: 14px; color: var(--navy-muted); }
 .viewer-tag { position: absolute; z-index: 2; top: 12px; left: 14px; right: 14px; font-size: 13px; color: var(--navy-muted); pointer-events: none; }
 .viewer-status { position: absolute; z-index: 3; left: 50%; top: 50%; transform: translate(-50%, -50%); padding: 8px 14px; background: var(--navy-raised); border-radius: var(--radius-control); font-size: 14px; text-align: center; font-variant-numeric: tabular-nums; }
+/* Lados anatómicos de la vista elegida (Anterior, Posterior, Superior) */
+.viewer-axes { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+.viewer-axis { position: absolute; padding: 3px 8px; background: rgba(2, 26, 53, .72); border-radius: var(--radius-control); font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--navy-muted); }
+.viewer-axis-left { left: 12px; top: 50%; transform: translateY(-50%); }
+.viewer-axis-right { right: 12px; top: 50%; transform: translateY(-50%); }
+.viewer-axis-top { top: 40px; left: 50%; transform: translateX(-50%); }
+.viewer-axis-bottom { bottom: 56px; left: 50%; transform: translateX(-50%); }
 .viewer-tip { position: absolute; z-index: 4; padding: 5px 10px; background: #fff; color: var(--text); border-radius: var(--radius-control); font-size: 14px; font-weight: 500; white-space: nowrap; box-shadow: 0 4px 14px rgba(2, 26, 53, .35); pointer-events: none; }
 /* Cómo mover el modelo: franja fija entre el modelo y los controles, sin tapar nada */
 .viewer-hint { flex: none; padding: 7px 12px; border-top: 1px solid var(--navy-line); background: var(--navy); }

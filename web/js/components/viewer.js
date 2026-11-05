@@ -6,6 +6,13 @@ import { icon, reticle } from './icons.js';
 
 const SPEEDS = [0.25, 0.5, 1, 1.5, 2];
 
+// Vistas anatómicas del fémur. Los rótulos dicen hacia dónde queda cada lado del hueso en la pantalla.
+const VIEWS = [
+  { name: 'anterior', label: 'Anterior', sides: { left: 'Lateral', right: 'Medial' } },
+  { name: 'posterior', label: 'Posterior', sides: { left: 'Medial', right: 'Lateral' } },
+  { name: 'superior', label: 'Superior', sides: { top: 'Medial', bottom: 'Lateral', left: 'Posterior', right: 'Anterior' } },
+];
+
 function button(name, label, onClick) {
   return h('button', { class: 'viewer-btn', type: 'button', 'aria-label': label, title: label, onClick }, icon(name));
 }
@@ -56,6 +63,8 @@ export function createViewer({
   const legend = h('ul', { class: 'viewer-legend', 'aria-label': 'Piezas del modelo', hidden: true });
   const hint = controlsHint();
   hint.hidden = true;
+  // Rótulos de orientación de la vista elegida; se quitan apenas se gira el modelo.
+  const axes = h('div', { class: 'viewer-axes', 'aria-hidden': 'true', hidden: true });
 
   const play = button('play', 'Reproducir', () => { engine?.setPlaying(!engine.playing); sync(); });
   const restart = button('restart', 'Volver al inicio', () => { engine?.restart(); sync(); });
@@ -64,12 +73,12 @@ export function createViewer({
   const time = h('input', { class: 'viewer-time', type: 'range', min: 0, max: 1000, value: 0, 'aria-label': 'Posición de la animación', onInput: (e) => engine?.seekRatio(e.target.value / 1000) });
   const animationGroup = h('div', { class: 'viewer-group viewer-animation', hidden: true }, play, restart, speed, time);
   const viewGroup = h('div', { class: 'viewer-group' },
-    ['Frente', 'Lado', 'Arriba'].map((label, i) => h('button', {
+    VIEWS.map((view) => h('button', {
       class: 'viewer-btn',
       type: 'button',
-      title: `Ver desde: ${label.toLowerCase()}`,
-      onClick: () => engine?.view(['front', 'side', 'top'][i]),
-    }, label)),
+      title: `Vista ${view.label.toLowerCase()}`,
+      onClick: () => showView(view),
+    }, view.label)),
     button('zoomOut', 'Alejar', () => engine?.zoom(1.25)),
     button('zoomIn', 'Acercar', () => engine?.zoom(0.8)),
   );
@@ -97,6 +106,15 @@ export function createViewer({
         h('div', { class: 'viewer-empty-copy' }, h('i', { class: 'viewer-dot' }), h('strong', {}, emptyTitle), h('span', {}, emptyText)),
       ),
     );
+  }
+
+  function showView(view) {
+    if (!engine) return;
+    engine.view(view.name);
+    // Los lados anatómicos solo tienen sentido si el modelo muestra el fémur.
+    const femur = engine.pieces().some((name) => /f[eé]mur/i.test(name) && !engine.hidden?.has(name));
+    replace(axes, femur ? Object.entries(view.sides).map(([side, text]) => h('span', { class: `viewer-axis viewer-axis-${side}` }, text)) : []);
+    axes.hidden = !femur;
   }
 
   function status(text) {
@@ -200,17 +218,19 @@ export function createViewer({
     hint.hidden = true;
     legend.hidden = true;
     tip.hidden = true;
-    replace(canvas, noteEl, legend, tip);
+    axes.hidden = true;
+    replace(canvas, noteEl, axes, legend, tip);
     status('Cargando el visor…');
     try {
       const { Engine3D } = await import('./viewer3d.js');
       if (token !== loadToken) return;
       engine = new Engine3D(canvas);
       engine.onEnd = sync;
+      engine.onOrbit(() => { axes.hidden = true; });
       // Para lectores de pantalla el lienzo es una imagen con nombre; las vistas se cambian con los botones.
       const drawing = canvas.querySelector('canvas');
       drawing.setAttribute('role', 'img');
-      drawing.setAttribute('aria-label', `Modelo 3D: ${source.title}. Usa los botones Frente, Lado, Arriba, Alejar y Acercar para cambiar la vista.`);
+      drawing.setAttribute('aria-label', `Modelo 3D: ${source.title}. Usa los botones Anterior, Posterior, Superior, Alejar y Acercar para cambiar la vista.`);
       await engine.load(source, (percent) => {
         if (token === loadToken) status(percent === null ? 'Cargando el modelo…' : `Cargando el modelo: ${percent} %`);
       });
