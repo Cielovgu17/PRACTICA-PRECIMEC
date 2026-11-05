@@ -851,11 +851,11 @@ const ESCENAS = {
     add('line', { x1: b[0], y1: a[1], x2: zoom.x, y2: zoom.y, stroke: C.orange, 'stroke-width': 2 });
     add('line', { x1: b[0], y1: b[1], x2: zoom.x, y2: zoom.y + zoom.h, stroke: C.orange, 'stroke-width': 2 });
     add('rect', { x: zoom.x, y: zoom.y, width: zoom.w, height: zoom.h, fill: 'none', stroke: C.line, 'stroke-width': 2, rx: 8 });
-    title('Estimar el diámetro del canal', 'Con la plantilla, para elegir el diámetro del clavo.', 700);
-    callout(pz([0.0085, level + 0.0068, 0.032]), 1345, 300, ['Corchete de la', 'plantilla (12 mm)'], { color: C.orange, size: 28 });
-    callout(pz([rightWall, level, 0.012]), 1345, 470, 'Diámetro', { color: C.orange, size: 32 });
+    title('Estimar el diámetro (Φ) del canal', 'Con la plantilla, para elegir el diámetro (Φ) del clavo.', 700);
+    callout(pz([0.0085, level + 0.0068, 0.032]), 1345, 300, ['Corchete de la', 'plantilla (Φ12 mm)'], { color: C.orange, size: 28 });
+    callout(pz([rightWall, level, 0.012]), 1345, 470, 'Diámetro (Φ)', { color: C.orange, size: 32 });
     callout(pz([-0.0005, level - 0.03, 0.005]), 1345, 690, ['Canal', 'intramedular'], { size: 28 });
-    chip(700, 880, 'Clavo principal: Φ9.4, 10, 11 o 12 mm');
+    chip(700, 880, 'Clavo principal: Φ9,4, Φ10, Φ11 o Φ12 mm');
     note();
   },
   async '3-4-clavo-principal-extendido'() {
