@@ -82,6 +82,23 @@ class Glb:
         self.doc["accessors"].append(acc)
         return len(self.doc["accessors"]) - 1
 
+    def append_raw(self, array, component, kind, target=None):
+        raw = np.ascontiguousarray(array).tobytes()
+        pad = (4 - len(raw) % 4) % 4
+        offset = self.doc["buffers"][0]["byteLength"]
+        self.data = self.data + raw + bytes(pad)
+        self.doc["buffers"][0]["byteLength"] = offset + len(raw) + pad
+        struct.pack_into("<I", self.data, self.bin - 8, self.doc["buffers"][0]["byteLength"])
+        view = {"buffer": 0, "byteOffset": offset, "byteLength": len(raw)}
+        if target:
+            view["target"] = target
+        self.doc["bufferViews"].append(view)
+        acc = {"bufferView": len(self.doc["bufferViews"]) - 1, "componentType": component, "count": len(array), "type": kind}
+        if kind == "VEC3" and component == 5126:
+            acc["min"], acc["max"] = array.min(0).astype(float).tolist(), array.max(0).astype(float).tolist()
+        self.doc["accessors"].append(acc)
+        return len(self.doc["accessors"]) - 1
+
     def clip(self, name):
         return next(a for a in self.doc["animations"] if a["name"] == name)
 
@@ -461,6 +478,12 @@ def paso35(g):
             if ((ENTRY + SURFACE_UP * PIN_AXIS - corners) @ PIN_AXIS).max() > REAM_DEPTH + 0.008 and (name, "scale") in new:
                 new[(name, "scale")][:] = TINY
                 hidden += 1
+    # Canal escariado marcado: un tubo continuo color hueso esponjoso (como el hueco del abridor) que se va
+    # formando detrás de la cabeza del escariador, primero de Φ9 y luego de Φ10,5. Reemplaza los anillos sueltos.
+    for name in names.values():
+        if name.startswith("Canal_escariado_") and (name, "scale") in new:
+            new[(name, "scale")][:] = TINY
+    tube_nodes = canal_escariado(g, new, nt, vis)
     # Final: sale todo. 0,5 s: se va el perforador con el escariador; 3 s: sube y se va el protector; 3 s: sube y se
     # va el pin guía; 2 s con el canal listo.
     fps = 1 / np.median(np.diff(nt))
@@ -486,7 +509,7 @@ def paso35(g):
     leave("Threaded_Guide_Pin_3.2x400", end + 4.0, end + 7.0, 0.42)
     # Escribe todo de nuevo (más corto y con el final agregado).
     new_input = g.append(nt2[:, None], "SCALAR")
-    node_index = {v: k for k, v in names.items()}
+    node_index = {n["name"]: k for k, n in enumerate(g.doc["nodes"])}
     done = set()
     for ch in clip["channels"]:
         key = (names[ch["target"]["node"]], ch["target"]["path"])
@@ -505,6 +528,54 @@ def paso35(g):
         clip["channels"].append({"sampler": len(clip["samplers"]) - 1, "target": {"node": node_index[key[0]], "path": key[1]}})
     print(f"3.5: quedan Φ9,0 y Φ10,5; escariador hasta {REAM_DEPTH*1000:.0f} mm (subido hasta {lift.max()*1000:.0f} mm); "
           f"anillos ocultos {hidden}; dura {nt2[-1]:.1f} s (antes {t[-1]:.1f} s)")
+
+
+REAMED_FROM = 0.050      # el tubo empieza dentro del túnel de la broca de Φ16,5 (que llega a ~66 mm)
+REAMED_SEGMENT = 0.005
+
+
+def canal_escariado(g, new, nt, vis):
+    A = ENTRY + SURFACE_UP * PIN_AXIS
+    base = next(m for m in g.doc["materials"] if m["name"] == "Hueso_esponjoso_abertura")
+    g.doc["materials"].append({"name": "Hueso_escariado_marcado", "doubleSided": True,
+                               "pbrMetallicRoughness": dict(base["pbrMetallicRoughness"]),   # sólido, como el hueco
+                               "emissiveFactor": [0.35, 0.17, 0.11]})                         # algo de brillo propio
+    material = len(g.doc["materials"]) - 1
+    instrumental = next(i for i, n in enumerate(g.doc["nodes"]) if n["name"] == "Instrumental")
+    rot = quat_between(np.array([0.0, 1.0, 0.0]), PIN_AXIS).tolist()
+    count = 0
+    for d, radius in (("D9.0", 0.0045), ("D10.5", 0.00525)):
+        # malla: un tramo de tubo abierto de y=0 a y=-REAMED_SEGMENT
+        ang = np.linspace(0, 2 * np.pi, 33)
+        ring = np.stack([np.cos(ang), np.zeros_like(ang), np.sin(ang)], 1)
+        pos = np.concatenate([ring * radius, ring * radius + [0, -REAMED_SEGMENT, 0]]).astype("<f4")
+        nor = np.concatenate([ring, ring]).astype("<f4")
+        idx = []
+        for i in range(32):
+            a, b, c, e = i, i + 1, 33 + i, 33 + i + 1
+            idx += [a, c, b, b, c, e]
+        idx = np.array(idx, "<u2")
+        prim = {"attributes": {"POSITION": g.append_raw(pos, 5126, "VEC3", 34962), "NORMAL": g.append_raw(nor, 5126, "VEC3", 34962)},
+                "indices": g.append_raw(idx, 5123, "SCALAR", 34963), "material": material}
+        g.doc["meshes"].append({"name": f"Hueso_escariado_{d}", "primitives": [prim]})
+        mesh = len(g.doc["meshes"]) - 1
+        # profundidad de la cabeza del escariador en el tiempo (lo más hondo alcanzado hasta ese momento)
+        name = f"Escariador_flexible_{d}"
+        axis = np.array([quat_matrix(q) @ [0, 0, 1] for q in new[(name, "rotation")]])
+        tip = new[(name, "translation")] + REAMER_HEAD * axis
+        depth = np.where(vis(name), (A - tip) @ PIN_AXIS, 0)
+        reached = np.maximum.accumulate(depth)
+        for k in np.arange(REAMED_FROM, REAM_DEPTH - 1e-9, REAMED_SEGMENT):
+            # Sin la palabra "canal": el visor oculta por defecto las piezas del canal esquemático, y esta debe verse.
+            node_name = f"Hueso_escariado_Φ{d[1:].replace('.0', '').replace('.', ',')}_{int(round(k * 1000)):03d}"
+            g.doc["nodes"].append({"name": node_name, "mesh": mesh, "translation": (A - k * PIN_AXIS).tolist(),
+                                   "rotation": rot, "scale": [TINY] * 3})
+            g.doc["nodes"][instrumental].setdefault("children", []).append(len(g.doc["nodes"]) - 1)
+            shown = reached >= k + REAMED_SEGMENT * 0.5
+            new[(node_name, "scale")] = np.where(shown[:, None], 1.0, TINY) * np.ones((len(nt), 3))
+            count += 1
+    print(f"   canal escariado marcado: {count} tramos de {REAMED_SEGMENT*1000:.0f} mm, de {REAMED_FROM*1000:.0f} a {REAM_DEPTH*1000:.0f} mm")
+    return count
 
 
 if __name__ == "__main__":
