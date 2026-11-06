@@ -191,10 +191,10 @@ def anatomia(g):
         if name.startswith("Anatomia"):
             assert not any(k in node for k in ("translation", "rotation", "scale", "matrix")), name
             node["translation"], node["rotation"], node["scale"] = t.tolist(), q.tolist(), [s, s, s]
-        elif name.startswith(("Tunel_broca_16.5", "Abertura_punto_entrada", "Cortical_retirada_por_el_abridor")):
+        elif name.startswith(("Tunel_broca", "Canal_escariado_", "Abertura_punto_entrada", "Cortical_retirada_por_el_abridor")):
             # Lo hace el instrumental: sigue al instrumental, no al hueso. El túnel y el hueco de la abertura quedan
             # donde los dejó el instrumental (el hueco termina justo bajo la superficie, sin asomarse por fuera).
-            delta = np.zeros(3) if name.startswith(("Tunel", "Abertura")) else SURFACE_UP * PIN_AXIS
+            delta = np.zeros(3) if name.startswith(("Tunel", "Canal_escariado_", "Abertura")) else SURFACE_UP * PIN_AXIS
             base = np.array(node.get("translation", [0, 0, 0]), float)
             node["translation"] = ((Ri @ (base + delta - t)) / s).tolist()
             node["rotation"] = quat_mul(np.array(inverse_q), np.array([node.get("rotation", [0, 0, 0, 1])], float))[0].tolist()
@@ -403,6 +403,110 @@ def retirar_broca(g, clip, stop_time):
     print(f"3.4: la broca sale de {start:.1f} a {end:.1f} s (hasta y={RETRACT_TO_Y}); dura {new_t[-1]:.1f} s")
 
 
+# ---------- Paso 3.5: escariado flexible ----------
+# La animación trae cuatro escariadores (Φ9,0; 9,5; 10,0; 10,5). Se dejan dos: Φ9,0 y Φ10,5, porque para el clavo
+# corto de Φ9,4 × 240 mm el canal se escaria hasta ~1 mm más que el clavo. Se corta el tramo de los otros dos.
+# El escariador llega hasta REAM_DEPTH (el clavo mide 240 mm; la punta del pin guía está a 250 mm).
+# Al final se retiran el perforador con el escariador, el protector de tejidos y el pin guía: queda el canal listo.
+CUT_FROM, CUT_TO = 44.3, 97.5          # s: del cambio Φ9,0 -> Φ9,5 al cambio Φ10,0 -> Φ10,5
+REAM_DEPTH = 0.245
+REAMER_HEAD = 0.28                      # la cabeza del escariador está a 280 mm de su origen, a lo largo de su eje z
+KEEP, DROP = ("D9.0", "D10.5"), ("D9.5", "D10.0")
+
+
+def paso35(g):
+    clip = g.doc["animations"][0]
+    for name in ("Femur_derecho", "Canal_medular_esquematico"):   # el hueso lo ubica anatomia(), como en los demás
+        for k in ("translation", "rotation", "scale"):
+            g.node(name).pop(k, None)
+    names = {i: n["name"] for i, n in enumerate(g.doc["nodes"])}
+    t = g.array(clip["samplers"][0]["input"])[:, 0].astype(float)
+    assert all(sm["input"] == clip["samplers"][0]["input"] for sm in clip["samplers"])
+    ia, ib = np.nonzero(t <= CUT_FROM)[0], np.nonzero(t > CUT_TO)[0]
+    idx = np.concatenate([ia, ib])
+    nt = np.concatenate([t[ia], t[ib] - (CUT_TO - CUT_FROM)])
+    tracks = {}
+    for ch in clip["channels"]:
+        sm = clip["samplers"][ch["sampler"]]
+        tracks[(names[ch["target"]["node"]], ch["target"]["path"])] = g.array(sm["output"]).astype(float)
+    new = {key: v[idx].copy() for key, v in tracks.items()}
+    # Los anillos del canal escariado con Φ9,0 se quedan hasta que pasa el Φ10,5 (antes los reemplazaba el Φ9,5).
+    for (name, path), v in new.items():
+        if name.startswith("Canal_escariado_D9.0_") and path == "scale":
+            twin = (name.replace("D9.0", "D10.0"), path)
+            if twin in tracks:
+                v[len(ia):] = tracks[twin][ib]
+        if any(f"_{d}" in name for d in DROP) and path == "scale":
+            v[:] = TINY
+    # Profundidad máxima del escariador.
+    vis = lambda name: new[(name, "scale")][:, 0] > 0.01
+    lift = np.zeros(len(nt))
+    for d in KEEP:
+        name = f"Escariador_flexible_{d}"
+        pos, rot = new[(name, "translation")], new[(name, "rotation")]
+        axis = np.array([quat_matrix(q) @ [0, 0, 1] for q in rot])
+        tip = pos + REAMER_HEAD * axis
+        A = ENTRY + SURFACE_UP * PIN_AXIS
+        excess = np.clip((A - tip) @ PIN_AXIS - REAM_DEPTH, 0, None)
+        pos += excess[:, None] * PIN_AXIS
+        lift = np.where(vis(name), np.maximum(lift, excess), lift)
+    new[("Perforador_quirurgico", "translation")] += lift[:, None] * PIN_AXIS
+    # Anillos del canal escariado más hondos que el escariador: no aparecen.
+    hidden = 0
+    for i, name in names.items():
+        if name.startswith("Canal_escariado_") and "mesh" in g.doc["nodes"][i]:
+            acc = g.doc["accessors"][g.doc["meshes"][g.doc["nodes"][i]["mesh"]]["primitives"][0]["attributes"]["POSITION"]]
+            base = np.array(g.doc["nodes"][i].get("translation", [0, 0, 0]))
+            corners = base + np.array([[x, y, z] for x in (acc["min"][0], acc["max"][0]) for y in (acc["min"][1], acc["max"][1]) for z in (acc["min"][2], acc["max"][2])])
+            if ((ENTRY + SURFACE_UP * PIN_AXIS - corners) @ PIN_AXIS).max() > REAM_DEPTH + 0.008 and (name, "scale") in new:
+                new[(name, "scale")][:] = TINY
+                hidden += 1
+    # Final: sale todo. 0,5 s: se va el perforador con el escariador; 3 s: sube y se va el protector; 3 s: sube y se
+    # va el pin guía; 2 s con el canal listo.
+    fps = 1 / np.median(np.diff(nt))
+    end = nt[-1]
+    extra = np.arange(end + 1 / fps, end + 8.5 + 1e-9, 1 / fps)
+    nt2 = np.concatenate([nt, extra])
+    for key, v in new.items():
+        new[key] = np.concatenate([v, np.repeat(v[-1:], len(extra), axis=0)])
+    gone = nt2 > end + 0.5
+    for name in ("Perforador_quirurgico", "Escariador_flexible_D9.0", "Escariador_flexible_D10.5", "Llave_en_T_portabrocas"):
+        if (name, "scale") not in new:
+            new[(name, "scale")] = np.repeat([np.array(g.node(name).get("scale", [1, 1, 1]), float)], len(nt2), axis=0)
+        new[(name, "scale")][gone] = TINY
+    def leave(node_name, t0, t1, distance):
+        node = g.node(node_name)
+        base = np.array(node.get("translation", [0, 0, 0]), float)
+        f = np.clip((nt2 - t0) / (t1 - t0), 0, 1)
+        f = f * f * (3 - 2 * f)
+        new[(node_name, "translation")] = base + (f * distance)[:, None] * PIN_AXIS
+        sc = np.array(node.get("scale", [1, 1, 1]), float)
+        new[(node_name, "scale")] = np.where((nt2 > t1)[:, None], TINY, sc[None, :])
+    leave("Protector_tejidos_camisa", end + 0.8, end + 3.8, 0.20)
+    leave("Threaded_Guide_Pin_3.2x400", end + 4.0, end + 7.0, 0.42)
+    # Escribe todo de nuevo (más corto y con el final agregado).
+    new_input = g.append(nt2[:, None], "SCALAR")
+    node_index = {v: k for k, v in names.items()}
+    done = set()
+    for ch in clip["channels"]:
+        key = (names[ch["target"]["node"]], ch["target"]["path"])
+        sm = clip["samplers"][ch["sampler"]]
+        v = new[key]
+        if key[1] == "rotation":
+            v = v / np.linalg.norm(v, axis=1, keepdims=True)
+        sm["input"] = new_input
+        sm["output"] = g.append(v, {3: "VEC3", 4: "VEC4"}[v.shape[1]])
+        done.add(key)
+    for key, v in new.items():
+        if key in done:
+            continue
+        clip["samplers"].append({"input": new_input, "output": g.append(v, "VEC3"),
+                                 "interpolation": "STEP" if key[1] == "scale" else "LINEAR"})
+        clip["channels"].append({"sampler": len(clip["samplers"]) - 1, "target": {"node": node_index[key[0]], "path": key[1]}})
+    print(f"3.5: quedan Φ9,0 y Φ10,5; escariador hasta {REAM_DEPTH*1000:.0f} mm (subido hasta {lift.max()*1000:.0f} mm); "
+          f"anillos ocultos {hidden}; dura {nt2[-1]:.1f} s (antes {t[-1]:.1f} s)")
+
+
 if __name__ == "__main__":
     action, src, dst = sys.argv[1:4]
     glb = Glb(src)
@@ -411,7 +515,7 @@ if __name__ == "__main__":
         sin_lineas31(glb)
         anatomia(glb)
     else:
-        {"paso32": paso32, "paso33": paso33, "paso34": paso34}[action](glb)
+        {"paso32": paso32, "paso33": paso33, "paso34": paso34, "paso35": paso35}[action](glb)
         anatomia(glb)
     sin_sobrantes(glb)
     glb.save(dst)
