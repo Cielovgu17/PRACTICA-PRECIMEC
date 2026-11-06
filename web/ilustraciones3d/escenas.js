@@ -717,6 +717,54 @@ const ESCENAS = {
     note();
   },
   // Revisión: el fémur tal como viene en el archivo (con sus normales originales), desde las cuatro caras.
+  // Revisión: último cuadro de una animación, de frente (vista anterior del fémur), hueso transparente.
+  async 'ver-pin'() {
+    const params = new URLSearchParams(location.search);
+    const gltf = await new GLTFLoader().parseAsync(await (await fetch(params.get('url'))).arrayBuffer(), '');
+    const mixer = new THREE.AnimationMixer(gltf.scene);
+    // Un archivo puede traer varias escenas (una por movimiento): se deja solo la del movimiento elegido.
+    const clip = gltf.animations[Number(params.get('clip') || gltf.animations.length - 1)];
+    const targets = new Set(clip.tracks.map((tr) => tr.name.split('.')[0]));
+    const roots = gltf.scene.children.length === 1 && gltf.scene.children[0].children.length > 1 ? gltf.scene.children[0].children : gltf.scene.children;
+    roots.forEach((root) => {
+      let used = false;
+      root.traverse((n) => { if (targets.has(n.name)) used = true; });
+      root.visible = used;
+    });
+    mixer.clipAction(clip).play();
+    mixer.setTime(Number(params.get('t') || clip.duration - 1e-3));
+    gltf.scene.updateMatrixWorld(true);
+    let femurNode = null;
+    gltf.scene.traverseVisible((node) => {
+      if (!node.isMesh) return;
+      if (/^Femur/.test(node.name)) { femurNode = femurNode || node; node.material = boneGlass(0.28); }
+      if (/^Canal/.test(node.name)) node.material = new THREE.MeshStandardMaterial({ color: 0x4f8fd8, transparent: true, opacity: 0.45, depthWrite: false, side: THREE.DoubleSide });
+      if (/Camara|Vista_/.test(node.name)) node.visible = false;
+    });
+    const q = new THREE.Quaternion(); femurNode.getWorldQuaternion(q);
+    const S = new THREE.Vector3(0.0758, 0.992, 0.1006).normalize().applyQuaternion(q);
+    const A = new THREE.Vector3(-0.3558, -0.0673, 0.9321).normalize().applyQuaternion(q);
+    const Md = new THREE.Vector3(0.9315, -0.1065, 0.3479).normalize().applyQuaternion(q);
+    // Encuadre: los 280 mm de arriba del hueso (donde va el pin).
+    const box3 = new THREE.Box3().setFromObject(femurNode);
+    let top = -Infinity; const topPoint = new THREE.Vector3();
+    const pos = femurNode.geometry.attributes.position; const v = new THREE.Vector3();
+    for (let i = 0; i < pos.count; i += 7) { v.fromBufferAttribute(pos, i).applyMatrix4(femurNode.matrixWorld); if (v.dot(S) > top) { top = v.dot(S); topPoint.copy(v); } }
+    const c = topPoint.clone().addScaledVector(S, -0.13);
+    const views = [['De frente (anterior)', A, S], ['De lado (interna)', Md, S]];
+    views.forEach(([name, dir, up], i) => {
+      const scene = new THREE.Scene();
+      floorAndLights(scene, { key: [dir.x + 0.3, 1.5, dir.z + 0.3], span: 1, floorY: -2 });
+      scene.add(gltf.scene.clone());
+      const cam = new THREE.PerspectiveCamera(20, 800 / 1000, 0.01, 10);
+      cam.position.copy(c).addScaledVector(dir, 0.9);
+      cam.up.copy(up);
+      cam.lookAt(c);
+      cam.updateMatrixWorld();
+      render(scene, cam, { x: i * 800, y: 0, w: 800, h: 1000 });
+      label(i * 800 + 24, 48, name, { size: 30, weight: 600 });
+    });
+  },
   async 'ver-femur'() {
     const content = await (await fetch('/api/content')).json();
     const params = new URLSearchParams(location.search);
@@ -952,15 +1000,9 @@ const ESCENAS = {
   },
   async '4-2-punto-de-entrada'() {
     await loadFemur();
-    // Punto de entrada: la punta del trocánter mayor, su parte más alta (medida en el modelo).
-    const point = new THREE.Vector3(-0.0037, 0.2143, -0.0163);
-    let za = -1, zp = 1;
-    femurGeometries.forEach((g) => {
-      const pos = g.attributes.position;
-      for (let i = 0; i < pos.count; i += 1) {
-        if (Math.abs(pos.getX(i) - point.x) < 0.004 && pos.getY(i) > 0.17) { za = Math.max(za, pos.getZ(i)); zp = Math.min(zp, pos.getZ(i)); }
-      }
-    });
+    // Punto de entrada como en AO: de frente en la punta del trocánter mayor; desde arriba, en la mitad entre
+    // sus bordes anterior y posterior, en línea con el canal (el mismo punto que usan las animaciones).
+    const point = new THREE.Vector3(-0.0055, 0.2133, -0.0129);
     const scene = new THREE.Scene();
     floorAndLights(scene, { key: [0.6, 2, 2], span: 0.5, floorY: -2 });
     scene.add(femur(M.bone));
@@ -990,7 +1032,21 @@ const ESCENAS = {
     render(scene, camFront, front);
     const pf = projector(camFront, front);
     const pt = projector(camTop, top);
-    title('Ubicar el punto de entrada', 'En la punta del trocánter mayor: su parte más alta.');
+    // Guía de la vista superior: bordes anterior y posterior de la cima del trocánter, la mitad por la entrada
+    // y una línea de adelante hacia atrás que cruza en la entrada (los mismos 14,7 mm del paso 3.1).
+    const guide = (a, b, dashed) => {
+      const [x1, y1] = pt(a.toArray()); const [x2, y2] = pt(b.toArray());
+      add('line', { x1, y1, x2, y2, stroke: C.white, 'stroke-width': dashed ? 3 : 4, 'stroke-dasharray': dashed ? '12 9' : 'none', 'stroke-linecap': 'round' });
+    };
+    const lifted = point.clone().addScaledVector(SUP, 0.002);
+    [-0.0147, 0, 0.0147].forEach((a) => {
+      const c = lifted.clone().addScaledVector(ANT, a);
+      guide(c.clone().addScaledVector(MED, -0.018), c.clone().addScaledVector(MED, 0.018), a !== 0);
+    });
+    guide(lifted.clone().addScaledVector(ANT, -0.0147), lifted.clone().addScaledVector(ANT, 0.0147), false);
+    const [cx, cy] = pt(lifted.toArray());
+    add('circle', { cx, cy, r: 9, fill: C.orange, stroke: C.white, 'stroke-width': 3 });
+    title('Ubicar el punto de entrada', 'De frente, en la punta del trocánter mayor; desde arriba, en la mitad.');
     label(72, 240, 'De frente', { size: 34, weight: 600 });
     label(830, 240, 'Superior', { size: 34, weight: 600 });
     callout(pf(point.toArray()), 250, 330, ['Punta del', 'trocánter', 'mayor'], { color: C.orange, anchor: 'end', size: 28 });
@@ -999,7 +1055,7 @@ const ESCENAS = {
     const frontP = pt(focus.clone().addScaledVector(ANT, 0.05).toArray());
     label(back[0], 900, 'Posterior', { size: 28, anchor: 'middle', plate: true });
     label(frontP[0], 900, 'Anterior', { size: 28, anchor: 'middle', plate: true });
-    callout(pt(point.toArray()), 990, 640, ['Punta del', 'trocánter', 'mayor'], { color: C.orange, anchor: 'end', size: 28 });
+    callout(pt(point.toArray()), 990, 640, ['En la mitad,', 'entre adelante', 'y atrás'], { color: C.orange, anchor: 'end', size: 28 });
     note();
   },
 };

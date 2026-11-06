@@ -142,31 +142,25 @@ def realign(g, clip, names):
 
 
 # ---------- Hueso acomodado al instrumental ----------
-# La entrada va en la punta del trocánter mayor (su parte más alta, como en la técnica de Kangli). El
-# instrumental conserva su recorrido; el hueso se ubica con esa punta en la entrada del instrumental (ENTRY,
-# 10 mm más arriba a lo largo del eje: la superficie) y se gira para que el canal siga al pin guía.
-# Elegido midiendo: pin dentro del canal en sus 250 mm, a 6 mm de la superficie del hueso; broca a 5,7 mm de la pared.
-TROCHANTER_TIP = np.array([-0.0037, 0.2143, -0.0163])   # en las coordenadas propias del fémur
+# Punto de entrada como en AO: de frente, en la punta del trocánter mayor; desde arriba, en la mitad
+# anteroposterior de esa punta (ancho 47,7 mm; la punta queda a 0,62 desde adelante), en línea con el canal.
+# El instrumental conserva su recorrido; el hueso se ubica con ese punto en la superficie de la entrada del
+# instrumental (ENTRY, 10 mm más arriba a lo largo del eje) y se gira para que la recta que mejor pasa por los
+# centros del canal (de 100 a 250 mm de profundidad, desde ese punto) quede justo sobre el pin guía.
+# Medido: de 150 a 250 mm el pin queda a 0,7-2,8 mm del centro del canal; la broca, 1,9 mm dentro del hueso.
+ENTRY_POINT = np.array([-0.0055, 0.2133, -0.0129])      # en las coordenadas propias del fémur
+CANAL_LINE = np.array([-0.02946, 0.99718, -0.06906])    # recta por ENTRY_POINT ajustada a los centros del canal
 OLD_HOLE = np.array([-0.0039, 0.2043, -0.0007])         # orificio que traía el modelo (se tapa en femur_limpio.py)
 SURFACE_UP = 0.010
 BONE_SCALE = float(__import__("os").environ.get("BONE_SCALE", 1.05))
-BONE_EULER = (np.radians(6.5), 0.0, np.radians(1.5))     # giro (x, y, z) alrededor de la punta
-
-
-def euler_xyz_quat(rx, ry, rz):
-    cx, sx = np.cos(rx / 2), np.sin(rx / 2)
-    cy, sy = np.cos(ry / 2), np.sin(ry / 2)
-    cz, sz = np.cos(rz / 2), np.sin(rz / 2)
-    return np.array([sx * cy * cz + cx * sy * sz, cx * sy * cz - sx * cy * sz,
-                     cx * cy * sz + sx * sy * cz, cx * cy * cz - sx * sy * sz])  # orden XYZ como Three.js
 
 
 def bone_transform():
-    """p -> A + S·R·(p - punta): traslación, giro (x, y, z, w) y escala del grupo Anatomia."""
-    q = euler_xyz_quat(*BONE_EULER)
+    """p -> A + S·R·(p - entrada): traslación, giro (x, y, z, w) y escala del grupo Anatomia."""
+    q = quat_between(CANAL_LINE, PIN_AXIS)
     R = quat_matrix(q)
     A = ENTRY + SURFACE_UP * PIN_AXIS
-    t = A - BONE_SCALE * R @ TROCHANTER_TIP
+    t = A - BONE_SCALE * R @ ENTRY_POINT
     return t, q, BONE_SCALE
 
 
@@ -188,7 +182,56 @@ def anatomia(g):
             node["rotation"] = quat_mul(np.array(inverse_q), np.array([node.get("rotation", [0, 0, 0, 1])], float))[0].tolist()
             node["scale"] = (np.array(node.get("scale", [1, 1, 1]), float) / s).tolist()
     g.doc.setdefault("extras", {})["orificio_a_tapar"] = OLD_HOLE.tolist()
-    print(f"   hueso: punta del trocánter en la entrada, girado {np.degrees(2 * np.arccos(min(1, q[3]))):.1f}°, escala {s}")
+    print(f"   hueso: punto de entrada AO en la entrada, girado {np.degrees(2 * np.arccos(min(1, q[3]))):.1f}°, escala {s}")
+
+
+# ---------- Guía del paso 3.1 sobre la cima del trocánter (vista superior, como en AO) ----------
+# Tres líneas en dirección medial-lateral: borde anterior, mitad (por la entrada) y borde posterior de la cima del
+# trocánter; el travesaño de la pieza de bordes (de adelante hacia atrás) cruza justo en la entrada.
+# Medido en la cima (10 mm por debajo de la punta): el borde anterior a 14,1 mm y el posterior a 15,3 mm de la
+# entrada, así que la entrada queda en la mitad. Las líneas flotan 2 mm sobre la entrada y se mueven con el hueso.
+SUPERIOR = np.array([0.0758, 0.992, 0.1006])
+MEDIAL = np.array([0.9315, -0.1065, 0.3479])
+GUIDE_HALF_WIDTH = 0.0147   # mitad de la distancia entre los bordes anterior y posterior
+GUIDE_LIFT = 0.002
+GUIDE_MEDIAL_SHIFT = 0.0    # el travesaño de la guía (centro de la pieza en la malla) queda sobre la entrada
+
+
+def matrix_quat(M):
+    w = np.sqrt(max(0.0, 1 + M[0, 0] + M[1, 1] + M[2, 2])) / 2
+    x = np.copysign(np.sqrt(max(0.0, 1 + M[0, 0] - M[1, 1] - M[2, 2])) / 2, M[2, 1] - M[1, 2])
+    y = np.copysign(np.sqrt(max(0.0, 1 - M[0, 0] + M[1, 1] - M[2, 2])) / 2, M[0, 2] - M[2, 0])
+    z = np.copysign(np.sqrt(max(0.0, 1 - M[0, 0] - M[1, 1] + M[2, 2])) / 2, M[1, 0] - M[0, 1])
+    return np.array([x, y, z, w])
+
+
+def guia31(g):
+    t, q, S = bone_transform()
+    R = quat_matrix(q)
+    sup = SUPERIOR / np.linalg.norm(SUPERIOR)
+    ant = np.cross(MEDIAL, sup); ant /= np.linalg.norm(ant)
+    med = np.cross(sup, ant)
+    Rw = R @ np.column_stack([med, sup, ant])          # x de la malla -> medial, y -> arriba, z -> adelante
+    qw = matrix_quat(Rw)
+    guide = g.node("Guia_tercios_trocanter_mayor")
+    pivot = -np.array(g.node("Bordes_AP_trocanter")["translation"])   # centro de la guía en la malla
+    edges = g.doc["accessors"][g.doc["meshes"][g.node("Bordes_AP_trocanter")["mesh"]]["primitives"][0]["attributes"]["POSITION"]]
+    k = GUIDE_HALF_WIDTH / ((edges["max"][2] - edges["min"][2]) / 2)   # separa los bordes al ancho medido
+    center = t + S * R @ (ENTRY_POINT + GUIDE_LIFT * sup)
+    guide["translation"] = (center + S * GUIDE_MEDIAL_SHIFT * Rw[:, 0]).tolist()
+    guide["rotation"] = qw.tolist()
+    clip = g.doc["animations"][0]
+    _, out = g.track(clip, "Guia_tercios_trocanter_mayor", "scale")
+    g.set_array(out, (g.array(out).astype(float) * np.array([S, S, S * k])).astype(np.float32))
+    # La línea del medio pasa por la entrada (antes iba en el tercio anterior).
+    line = g.node("Linea_tercio_anterior_2_3_posterior")
+    acc = g.doc["accessors"][g.doc["meshes"][line["mesh"]]["primitives"][0]["attributes"]["POSITION"]]
+    c = (np.array(acc["min"]) + np.array(acc["max"])) / 2
+    line["translation"] = [line["translation"][0], line["translation"][1], float(-c[2])]
+    line["name"] = "Linea_mitad_AP_por_la_entrada"
+    # Anillo y flecha en la entrada, sobre la superficie del hueso.
+    g.node("Marcador_punto_entrada")["translation"] = (ENTRY + SURFACE_UP * PIN_AXIS).tolist()
+    print(f"   guía 3.1: bordes a ±{GUIDE_HALF_WIDTH*1000:.1f} mm de la entrada, línea del medio por la entrada")
 
 
 def shift(values, amount):
@@ -286,6 +329,7 @@ if __name__ == "__main__":
     action, src, dst = sys.argv[1:4]
     glb = Glb(src)
     if action == "paso31":
+        guia31(glb)
         anatomia(glb)
     else:
         {"paso32": paso32, "paso33": paso33, "paso34": paso34}[action](glb)
