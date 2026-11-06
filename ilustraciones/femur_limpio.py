@@ -128,7 +128,65 @@ def shaft(P):
     return out
 
 
-def refine(points, triangles):
+# ---------- Hueso alrededor de la broca ----------
+# En este modelo la zona justo debajo del trocánter es angosta para la broca canulada de Φ16,5 mm: se
+# ensancha suave y localmente la pared, solo en el tramo donde pasa la broca, para dejar al menos 2 mm de
+# hueso alrededor. El eje del instrumental lo deja anotado ajustar_animaciones.py en el propio archivo.
+def around_drill(P, axis, triangles=None):
+    if not axis:
+        return P
+    E, u = np.asarray(axis["entrada"], float), np.asarray(axis["direccion"], float)
+    u = u / np.linalg.norm(u)
+    q = P - E
+    k = q @ u
+    radial = q - np.outer(k, u)
+    r = np.linalg.norm(radial, axis=1)
+    unit = radial / np.maximum(r, 1e-12)[:, None]
+    a = np.cross(u, [1.0, 0.0, 0.0]); a /= np.linalg.norm(a); b = np.cross(u, a)
+    ang = np.arctan2(radial @ b, radial @ a)
+    need = axis["radio_minimo"]
+    lo, hi = axis["broca_hasta"] - 0.004, -0.010 * need / 0.01175
+    # Superficie exterior cercana a la broca (mira hacia afuera del eje y no es el túnel interno).
+    tri = P[triangles]
+    face = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    normal = np.zeros_like(P)
+    for c in range(3):
+        np.add.at(normal, triangles[:, c], face)
+    facing = np.einsum("ij,ij->i", normal, unit) / np.maximum(np.linalg.norm(normal, axis=1), 1e-12)
+    outer = (facing > 0.3) & (r > 0.25 * need)
+    # Mapa de lo que falta (alto a lo largo del eje × ángulo alrededor), engrosado y suavizado.
+    dk = 0.002 * need / 0.01175
+    kb = np.round((k - lo) / dk).astype(int)
+    nk = int(np.ceil((hi - lo) / dk)) + 1
+    na = 36
+    ab = np.floor((ang + np.pi) / (2 * np.pi) * na).astype(int) % na
+    grid = np.zeros((nk + 40, na))
+    sel = outer & (k >= lo) & (k <= hi) & (r < need)
+    np.maximum.at(grid, (kb[sel] + 20, ab[sel]), need - r[sel])
+    for _ in range(3):  # ensanchar la zona de cada déficit
+        grid = np.maximum.reduce([grid, np.roll(grid, 1, 0), np.roll(grid, -1, 0), np.roll(grid, 1, 1), np.roll(grid, -1, 1)])
+    kernel_k = np.exp(-0.5 * (np.arange(-12, 13) / 5.0) ** 2); kernel_k /= kernel_k.sum()
+    kernel_a = np.exp(-0.5 * (np.arange(-4, 5) / 1.8) ** 2); kernel_a /= kernel_a.sum()
+    peak = grid.max()
+    grid = np.apply_along_axis(lambda c: np.convolve(c, kernel_k, mode="same"), 0, grid)
+    grid = np.apply_along_axis(lambda c: np.convolve(np.r_[c[-4:], c, c[:4]], kernel_a, mode="valid"), 1, grid)
+    if grid.max() > 0:
+        grid *= peak / grid.max()  # el suavizado no debe quedarse corto en el punto más angosto
+    # Lectura suave del mapa (bilineal), solo para la superficie exterior: el túnel interno no se mueve.
+    fk = np.clip((k - lo) / dk + 20, 0, grid.shape[0] - 1.001)
+    fa = (ang + np.pi) / (2 * np.pi) * na - 0.5
+    k0 = np.floor(fk).astype(int); tk = fk - k0
+    a0 = np.floor(fa).astype(int); ta = fa - a0
+    a0m, a1m = a0 % na, (a0 + 1) % na
+    value = ((1 - tk) * ((1 - ta) * grid[k0, a0m] + ta * grid[k0, a1m])
+             + tk * ((1 - ta) * grid[k0 + 1, a0m] + ta * grid[k0 + 1, a1m]))
+    push = np.where(r > 0.25 * need, value, 0.0)  # todo junto: la superficie se desplaza sin doblarse
+    out = P + unit * push[:, None]
+    print(f"   hueso ensanchado alrededor de la broca: {int((push > 1e-4).sum())} puntos, hasta {push.max() * 1000:.1f} mm")
+    return out
+
+
+def refine(points, triangles, axis=None):
     n = len(points)
     P = points.astype(np.float64)
     edges = np.concatenate([triangles[:, [0, 1]], triangles[:, [1, 2]], triangles[:, [2, 0]]])
@@ -158,6 +216,8 @@ def refine(points, triangles):
     P = original + shift
     # Diáfisis con contornos continuos.
     P = np.where(move, shaft(P), P)
+    # Hueso suficiente alrededor de la broca (si el archivo trae el eje del instrumental).
+    P = np.where(move, around_drill(P, axis, triangles), P)
     # Pasadas finales de Taubin para dejar sin marcas las transiciones.
     for factor in [LAMBDA, MU] * 30:
         avg = np.stack([np.bincount(src, weights=P[dst, k], minlength=n) for k in range(3)], axis=1) / deg[:, None]
@@ -170,6 +230,39 @@ def refine(points, triangles):
         np.add.at(N, triangles[:, k], face)
     N /= np.maximum(np.linalg.norm(N, axis=1, keepdims=True), 1e-12)
     return P, N, length
+
+
+def _trs(node):
+    from math import isclose  # noqa: F401
+    t = np.array(node.get("translation", [0, 0, 0]), float)
+    x, y, z, w = node.get("rotation", [0, 0, 0, 1])
+    R = np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                  [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                  [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+    M = np.eye(4)
+    M[:3, :3] = R * np.array(node.get("scale", [1, 1, 1]), float)[None, :]
+    M[:3, 3] = t
+    return M
+
+
+def local_axis(doc, mesh_index):
+    """El eje del instrumental (en coordenadas del mundo) llevado a las coordenadas de la malla del fémur."""
+    axis = doc.get("extras", {}).get("eje_instrumental")
+    if not axis:
+        return None
+    parents = {c: i for i, n in enumerate(doc["nodes"]) for c in n.get("children", [])}
+    node = next(i for i, n in enumerate(doc["nodes"]) if n.get("mesh") == mesh_index)
+    M = np.eye(4)
+    while node is not None:
+        M = _trs(doc["nodes"][node]) @ M
+        node = parents.get(node)
+    inv = np.linalg.inv(M)
+    scale = np.cbrt(abs(np.linalg.det(M[:3, :3])))
+    E = (inv @ np.array([*axis["entrada"], 1]))[:3]
+    u = inv[:3, :3] @ np.asarray(axis["direccion"], float)
+    return {**axis, "entrada": E.tolist(), "direccion": (u / np.linalg.norm(u)).tolist(),
+            "broca_desde": axis["broca_desde"] / scale, "broca_hasta": axis["broca_hasta"] / scale,
+            "radio_minimo": axis["radio_minimo"] / scale}
 
 
 def main(src_path, dst_path):
@@ -203,7 +296,7 @@ def main(src_path, dst_path):
             t = local[idx].reshape(-1, 3)
             t = t[(t[:, 0] != t[:, 1]) & (t[:, 1] != t[:, 2]) & (t[:, 0] != t[:, 2])]
             tris.append(t)
-        P, N, moved = refine(np.array(points), np.concatenate(tris))
+        P, N, moved = refine(np.array(points), np.concatenate(tris), local_axis(doc, mesh_index))
         for prim, local, offs in maps:
             write_floats(data, offs, P[local])
             acc = doc["accessors"][prim["attributes"]["POSITION"]]

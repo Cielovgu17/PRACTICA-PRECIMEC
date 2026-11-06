@@ -407,6 +407,11 @@ async function loadFemur() {
   const asset = Object.values(content.assets).find((item) => item.filename.startsWith('apertura'));
   const buffer = await (await fetch(asset.url)).arrayBuffer();
   const gltf = await new GLTFLoader().parseAsync(buffer, '');
+  // En las animaciones el grupo Anatomia acomoda el hueso al instrumental (corrido, girado y agrandado);
+  // las ilustraciones están medidas sobre el fémur original, así que ese ajuste se deshace aquí.
+  gltf.scene.traverse((node) => {
+    if (node.name.startsWith('Anatomia')) { node.position.set(0, 0, 0); node.quaternion.identity(); node.scale.set(1, 1, 1); }
+  });
   gltf.scene.updateMatrixWorld(true);
   femurGeometries = [];
   gltf.scene.traverse((node) => {
@@ -942,38 +947,66 @@ const ESCENAS = {
   },
   async '4-2-punto-de-entrada'() {
     await loadFemur();
+    // Ancho anteroposterior del trocánter mayor en el punto de entrada: el punto va en la unión del tercio
+    // anterior con los dos tercios posteriores.
+    let za = -1, zp = 1, topY = -1;
+    femurGeometries.forEach((g) => {
+      const pos = g.attributes.position;
+      for (let i = 0; i < pos.count; i += 1) {
+        const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+        if (Math.abs(x - ENTRY.x) < 0.003 && y > 0.17) { za = Math.max(za, z); zp = Math.min(zp, z); }
+        if (Math.abs(x - ENTRY.x) < 0.003 && Math.abs(z - ENTRY.z) < 0.004) topY = Math.max(topY, y);
+      }
+    });
+    const z13 = za - (za - zp) / 3;
+    const point = new THREE.Vector3(ENTRY.x, topY, z13);
     const scene = new THREE.Scene();
     floorAndLights(scene, { key: [0.6, 2, 2], span: 0.5, floorY: -2 });
     scene.add(femur(M.bone));
-    scene.add(ball(0.0058, M.orange, ENTRY.toArray()));
+    scene.add(ball(0.0058, M.orange, point.toArray()));
     const front = { x: 40, y: 200, w: 660, h: 730 };
     const camFront = new THREE.PerspectiveCamera(22, front.w / front.h, 0.02, 10);
     camFront.position.set(0.004, 0.165, 0.52);
     camFront.lookAt(0.004, 0.165, 0);
     camFront.updateMatrixWorld();
     render(scene, camFront, front);
-    const top = { x: 780, y: 220, w: 780, h: 700 };
-    const camTop = new THREE.PerspectiveCamera(22, top.w / top.h, 0.02, 10);
-    camTop.position.set(0.018, 0.68, -0.004);
-    camTop.up.set(0, 0, -1);
-    camTop.lookAt(0.018, 0, -0.004);
+    // Vista superior: mirando hacia abajo, con lo medial (la cabeza) arriba en la imagen.
+    const top = { x: 780, y: 200, w: 780, h: 730 };
+    const camTop = new THREE.PerspectiveCamera(24, top.w / top.h, 0.02, 10);
+    camTop.position.set(0.016, 0.56, -0.004);
+    camTop.up.set(1, 0, 0);
+    camTop.lookAt(0.016, 0, -0.004);
     camTop.updateMatrixWorld();
     render(scene, camTop, top);
     const pf = projector(camFront, front);
     const pt = projector(camTop, top);
     title('Ubicar el punto de entrada', 'Vértice del trocánter mayor, en la unión del tercio anterior con los dos tercios posteriores.');
     label(72, 240, 'De frente', { size: 34, weight: 600 });
-    label(830, 240, 'Desde arriba', { size: 34, weight: 600 });
-    callout(pf(ENTRY), 250, 330, ['Vértice del', 'trocánter', 'mayor'], { color: C.orange, anchor: 'end', size: 28 });
-    const ant = pt([ENTRY.x - 0.042, 0.215, 0.016]);
-    const pos = pt([ENTRY.x - 0.042, 0.215, -0.032]);
-    const here = pt([ENTRY.x - 0.042, 0.215, ENTRY.z]);
-    const dot = pt(ENTRY);
-    add('line', { x1: pos[0], y1: pos[1], x2: ant[0], y2: ant[1], stroke: C.white, 'stroke-width': 3 });
-    for (const q of [pos, ant]) add('line', { x1: q[0] - 12, y1: q[1], x2: q[0] + 12, y2: q[1], stroke: C.white, 'stroke-width': 3 });
-    add('line', { x1: here[0] - 14, y1: dot[1], x2: dot[0], y2: dot[1], stroke: C.orange, 'stroke-width': 3, 'stroke-dasharray': '10 10' });
-    label(pos[0] - 22, (pos[1] + dot[1]) / 2 - 8, ['2/3', 'posteriores'], { size: 26, anchor: 'end' });
-    label(ant[0] - 22, (ant[1] + dot[1]) / 2 + 8, '1/3 anterior', { size: 26, anchor: 'end' });
+    label(830, 240, 'Superior', { size: 34, weight: 600 });
+    callout(pf(point.toArray()), 250, 330, ['Vértice del', 'trocánter', 'mayor'], { color: C.orange, anchor: 'end', size: 28 });
+    // Líneas verticales: borde posterior, unión 1/3–2/3 y borde anterior (lo anterior queda a la derecha).
+    const yTop = 0.226;
+    const xs = [-0.04, 0.072];
+    const line = (z, color, dash) => {
+      const a = pt([xs[1], yTop, z]); const b = pt([xs[0], yTop, z]);
+      add('line', { x1: a[0], y1: a[1] - 10, x2: b[0], y2: b[1] + 10, stroke: color, 'stroke-width': 3, ...(dash ? { 'stroke-dasharray': '10 8' } : {}) });
+      return [a, b];
+    };
+    const [pA] = line(zp, C.white);
+    const [aA] = line(za, C.white);
+    const [mA] = line(z13, C.orange, true);
+    // Cotas arriba: 2/3 entre el borde posterior y la línea naranja; 1/3 entre la línea naranja y el borde anterior.
+    const cot = (x1, x2, y, text) => {
+      add('line', { x1, y1: y, x2, y2: y, stroke: C.white, 'stroke-width': 2.5 });
+      for (const x of [x1, x2]) add('line', { x1: x, y1: y - 10, x2: x, y2: y + 10, stroke: C.white, 'stroke-width': 2.5 });
+      label((x1 + x2) / 2, y - 16, text, { size: 30, weight: 600, anchor: 'middle', plate: true });
+    };
+    const yc = Math.min(pA[1], aA[1], mA[1]) - 30;
+    cot(pA[0], mA[0], yc, '2/3');
+    cot(mA[0], aA[0], yc, '1/3');
+    const pB = pt([xs[0], yTop, zp]); const aB = pt([xs[0], yTop, za]);
+    label(pB[0], pB[1] + 52, 'Posterior', { size: 28, anchor: 'middle', plate: true });
+    label(aB[0], aB[1] + 52, 'Anterior', { size: 28, anchor: 'middle', plate: true });
     note();
   },
 };

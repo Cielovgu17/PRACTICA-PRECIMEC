@@ -310,16 +310,30 @@ export class Engine3D {
     this.view('iso');
   }
 
+  // Ejes anatómicos del fémur visible (en el modelo: +y superior, +x medial, +z anterior; es un fémur derecho).
+  // Así las vistas Anterior, Posterior y Superior muestran el hueso bien orientado en cualquier animación.
+  anatomicalFrame() {
+    const femur = this.meshes.find((mesh) => mesh.visible && /femur/i.test(`${mesh.name} ${mesh.parent?.name || ''}`) && !/canal/i.test(mesh.name));
+    if (!femur) return null;
+    femur.updateMatrixWorld(true);
+    const x = new THREE.Vector3(); const y = new THREE.Vector3(); const z = new THREE.Vector3();
+    femur.matrixWorld.extractBasis(x, y, z);
+    return { superior: y.normalize(), medial: x.normalize(), anterior: z.normalize() };
+  }
+
   view(name) {
     // El campo de visión horizontal puede ser menor que el vertical en pantallas angostas: se usa el menor.
     const vertical = THREE.MathUtils.degToRad(this.camera.fov / 2);
     const horizontal = Math.atan(Math.tan(vertical) * Math.min(this.camera.aspect, 1));
     const distance = (this.radius / Math.sin(Math.min(vertical, horizontal))) * 1.08;
+    const f = this.anatomicalFrame() || { superior: new THREE.Vector3(0, 1, 0), medial: new THREE.Vector3(1, 0, 0), anterior: new THREE.Vector3(0, 0, 1) };
     const direction = {
       iso: new THREE.Vector3(1, 0.7, 1),
-      front: new THREE.Vector3(0, 0, 1),
-      side: new THREE.Vector3(1, 0, 0),
-      top: new THREE.Vector3(0, 1, 0.001),
+      anterior: f.anterior.clone(),
+      posterior: f.anterior.clone().negate(),
+      // Desde arriba, con lo anterior a la izquierda y lo posterior a la derecha: la pantalla queda con el
+      // lado lateral (trocánter mayor) arriba. Un leve desvío hacia medial fija ese giro de la imagen.
+      superior: f.superior.clone().addScaledVector(f.medial, 0.002),
     }[name].normalize();
     this.camera.position.copy(this.center).addScaledVector(direction, distance);
     this.controls.target.copy(this.center);

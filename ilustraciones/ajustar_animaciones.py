@@ -30,10 +30,11 @@ ENTRY = np.array([-0.0039, 0.2043, -0.0007])        # punto de entrada (centro d
 # Eje del canal medular: recta por el punto de entrada ajustada a los centros del canal entre y=-0,10 y 0,12.
 # El pin, el protector, la broca y el perforador se giran (~2°) alrededor de la entrada para seguirlo.
 # Ajustado además 1° y 0,5° para que la broca y el pin queden lo más centrados posible en el hueso y el canal.
-CANAL_AXIS = np.array([-0.02752, 0.99949, 0.01625])
-CANAL_AXIS = CANAL_AXIS / np.linalg.norm(CANAL_AXIS)
+# El instrumental conserva su recorrido original: es el hueso el que se acomoda a él (ver anatomia()).
+CANAL_AXIS = PIN_AXIS.copy()
 # El protector de tejidos se apoya sobre el hueso (antes entraba 17,5 mm en él): se sube a lo largo del eje.
-PROTECTOR_LIFT = 0.0175
+# Con el hueso acomodado (escala 1,15), la camisa queda apoyada en el borde del orificio de entrada.
+PROTECTOR_LIFT = float(__import__("os").environ.get("PROTECTOR_LIFT", 0.0120))
 # La broca baja hasta que su tope toca el borde superior de la camisa del protector: en la animación original
 # eso ocurre con la punta en y=0,1203; con el protector 17,5 mm más arriba, el tope toca 17,5 mm antes.
 DRILL_STOP_Y = float(__import__("os").environ.get("DRILL_STOP_Y", 0.1203 + PROTECTOR_LIFT))
@@ -110,11 +111,13 @@ def quat_matrix(q):
                      [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
 
 
-ALIGN = quat_between(PIN_AXIS, CANAL_AXIS)
+ALIGN = np.array([0.0, 0.0, 0.0, 1.0])
 
 
 def realign(g, clip, names):
-    """Gira cada pieza (su recorrido completo) alrededor del punto de entrada para seguir el eje del canal."""
+    """(Ya no se usa) Giraba el instrumental hacia el canal; ahora se mueve el hueso con anatomia()."""
+    if np.allclose(ALIGN, [0, 0, 0, 1]):
+        return
     R = quat_matrix(ALIGN)
     done = set()  # Blender guarda una sola vez los movimientos idénticos: cada dato se gira una sola vez
     for name in names:
@@ -135,6 +138,47 @@ def realign(g, clip, names):
         q = np.array(node.get("rotation", [0, 0, 0, 1]), float)
         node["rotation"] = quat_mul(ALIGN, q[None, :])[0].tolist()
         print(f"   girado: {name}{' (con su recorrido)' if moved else ''}")
+
+
+# ---------- Hueso acomodado al instrumental ----------
+# Medido en el modelo: la entrada quedaba a 0,40 del ancho del trocánter desde adelante; debe quedar a 1/3.
+# Con la entrada exactamente en 1/3 el pin rozaba la cara anterior del trocánter (que se curva hacia atrás):
+# la entrada queda a 0,40 del ancho, el punto donde el pin va dentro del hueso y centrado en el canal.
+BONE_SHIFT = np.array([0.0, 0.0, -0.0002])
+# Eje del canal (con el hueso ya corrido): recta por la entrada ajustada a los centros del canal (y -0,06 a 0,12).
+BONE_CANAL_AXIS = np.array([-0.02142, 0.99968, 0.01322])
+BONE_CANAL_AXIS = BONE_CANAL_AXIS / np.linalg.norm(BONE_CANAL_AXIS)
+BONE_SCALE = float(__import__("os").environ.get("BONE_SCALE", 1.20))
+
+
+def bone_transform():
+    """Traslación, giro (x, y, z, w) y escala del grupo de anatomía: p -> E + S·R·(p + shift - E)."""
+    q = quat_between(BONE_CANAL_AXIS, PIN_AXIS)
+    R = quat_matrix(q)
+    t = ENTRY + BONE_SCALE * R @ (BONE_SHIFT - ENTRY)
+    return t, q, BONE_SCALE
+
+
+def anatomia(g):
+    """Corre, gira y agranda el hueso (todo el grupo Anatomia) para que el canal quede centrado en el pin."""
+    t, q, s = bone_transform()
+    R = quat_matrix(q)
+    for node in g.doc["nodes"]:
+        if node["name"].startswith("Anatomia"):
+            assert not any(k in node for k in ("translation", "rotation", "scale", "matrix")), node["name"]
+            node["translation"], node["rotation"], node["scale"] = t.tolist(), q.tolist(), [s, s, s]
+        elif node["name"].startswith("Tunel_broca_16.5"):
+            # El túnel lo hace la broca: sigue al instrumental, no al hueso (se compensa el cambio del grupo).
+            Ri = R.T
+            node["translation"] = (-(Ri @ t) / s).tolist()
+            node["rotation"] = [-q[0], -q[1], -q[2], q[3]]
+            node["scale"] = [1 / s] * 3
+    if False:  # engrosado local desactivado: con escala 1,2 la broca ya queda dentro del hueso
+      g.doc.setdefault("extras", {})["eje_instrumental"] = {
+        "entrada": ENTRY.tolist(), "direccion": PIN_AXIS.tolist(),
+        # tramo de la broca (metros a lo largo del eje, desde la entrada) y radio mínimo de hueso alrededor
+        "broca_desde": -0.002, "broca_hasta": -(ENTRY[1] - DRILL_STOP_Y) / PIN_AXIS[1] - 0.004, "radio_minimo": 0.00825 + 0.0015}
+    print(f"   hueso: corrido {BONE_SHIFT[2] * 1000:.1f} mm, girado {np.degrees(2 * np.arccos(min(1, q[3]))):.2f}°, escala {s}")
 
 
 def shift(values, amount):
@@ -231,5 +275,9 @@ def paso34(g):
 if __name__ == "__main__":
     action, src, dst = sys.argv[1:4]
     glb = Glb(src)
-    {"paso32": paso32, "paso33": paso33, "paso34": paso34}[action](glb)
+    if action == "paso31":
+        anatomia(glb)
+    else:
+        {"paso32": paso32, "paso33": paso33, "paso34": paso34}[action](glb)
+        anatomia(glb)
     glb.save(dst)

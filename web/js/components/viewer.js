@@ -64,11 +64,11 @@ export function createViewer({
   const time = h('input', { class: 'viewer-time', type: 'range', min: 0, max: 1000, value: 0, 'aria-label': 'Posición de la animación', onInput: (e) => engine?.seekRatio(e.target.value / 1000) });
   const animationGroup = h('div', { class: 'viewer-group viewer-animation', hidden: true }, play, restart, speed, time);
   const viewGroup = h('div', { class: 'viewer-group' },
-    ['Frente', 'Lado', 'Arriba'].map((label, i) => h('button', {
+    ['Anterior', 'Posterior', 'Superior'].map((label, i) => h('button', {
       class: 'viewer-btn',
       type: 'button',
-      title: `Ver desde: ${label.toLowerCase()}`,
-      onClick: () => engine?.view(['front', 'side', 'top'][i]),
+      title: `Vista ${label.toLowerCase()} del fémur`,
+      onClick: () => engine?.view(['anterior', 'posterior', 'superior'][i]),
     }, label)),
     button('zoomOut', 'Alejar', () => engine?.zoom(1.25)),
     button('zoomIn', 'Acercar', () => engine?.zoom(0.8)),
@@ -210,7 +210,7 @@ export function createViewer({
       // Para lectores de pantalla el lienzo es una imagen con nombre; las vistas se cambian con los botones.
       const drawing = canvas.querySelector('canvas');
       drawing.setAttribute('role', 'img');
-      drawing.setAttribute('aria-label', `Modelo 3D: ${source.title}. Usa los botones Frente, Lado, Arriba, Alejar y Acercar para cambiar la vista.`);
+      drawing.setAttribute('aria-label', `Modelo 3D: ${source.title}. Usa los botones Anterior, Posterior, Superior, Alejar y Acercar para cambiar la vista.`);
       await engine.load(source, (percent) => {
         if (token === loadToken) status(percent === null ? 'Cargando el modelo…' : `Cargando el modelo: ${percent} %`);
       });
