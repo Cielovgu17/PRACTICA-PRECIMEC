@@ -265,6 +265,87 @@ def local_axis(doc, mesh_index):
             "radio_minimo": axis["radio_minimo"] / scale}
 
 
+# El túnel del fresado que trae el modelo (Φ~18 mm, 45-60 mm de hondo, ciego) se cierra subiendo sus
+# paredes y su fondo hasta la altura del borde: las paredes se aplanan y el fondo queda como tapa a ras.
+OLD_AXIS = np.array([-0.0488, 0.9987, 0.0170]) / np.linalg.norm([-0.0488, 0.9987, 0.0170])
+
+
+def close_tunnel(P, center, normals, tunnel_radius=0.0094):
+    q = P - center
+    k = q @ OLD_AXIS
+    radial = q - np.outer(k, OLD_AXIS)
+    r = np.linalg.norm(radial, axis=1)
+    a = np.cross(OLD_AXIS, [1.0, 0.0, 0.0]); a /= np.linalg.norm(a); b = np.cross(OLD_AXIS, a)
+    ang = np.arctan2(radial @ b, radial @ a)
+    rim = (r >= tunnel_radius) & (r < tunnel_radius + 0.004) & (k > -0.01) & (k < 0.02)
+    unit = radial / np.maximum(r, 1e-12)[:, None]
+    facing = np.einsum("ij,ij->i", normals, unit)
+    up = normals @ OLD_AXIS
+    walls = (facing < -0.5) & (r < tunnel_radius + 0.0012) & (k > -0.09) & (k < 0.015)   # miran hacia el eje
+    bottom = (up > 0.7) & (r < tunnel_radius) & (k < -0.02) & (k > -0.09)                # fondo, mira hacia arriba
+    cavity = walls | bottom
+    if rim.sum() < 10 or not cavity.any():
+        return P, 0
+    # Altura del borde según el ángulo (36 sectores, completando los vacíos con el promedio).
+    bins = (np.floor((ang + np.pi) / (2 * np.pi) * 36).astype(int)) % 36
+    height = np.full(36, np.nan)
+    for s in range(36):
+        sel = rim & (bins == s)
+        if sel.any():
+            height[s] = k[sel].max()
+    height = np.where(np.isnan(height), np.nanmean(height), height)
+    height = (np.roll(height, 1) + 2 * height + np.roll(height, -1)) / 4
+    out = P.copy()
+    out[cavity] = center + radial[cavity] + np.outer(height[bins[cavity]] - 0.0003, OLD_AXIS)
+    return out, int(cavity.sum())
+
+
+# ---------- Tapar el orificio que traía el modelo ----------
+# Cuando la entrada se mueve a la punta del trocánter (ajustar_animaciones.py), el orificio original del
+# abridor queda a un lado del instrumental: se tapa rellenando su borde (abanico hacia el centro).
+def cap_hole(P, triangles, center, radius=0.02):
+    a = np.concatenate([triangles[:, 0], triangles[:, 1], triangles[:, 2]])
+    b = np.concatenate([triangles[:, 1], triangles[:, 2], triangles[:, 0]])
+    lo, hi = np.minimum(a, b), np.maximum(a, b)
+    key = lo * len(P) + hi
+    uniq, inv, counts = np.unique(key, return_inverse=True, return_counts=True)
+    boundary = counts[inv] == 1
+    near = (np.linalg.norm(P[a] - center, axis=1) < radius) & (np.linalg.norm(P[b] - center, axis=1) < radius)
+    sel = boundary & near
+    if not sel.any():
+        return None
+    ra, rb = a[sel], b[sel]
+    rim = np.unique(np.concatenate([ra, rb]))
+    c = P[rim].mean(axis=0)
+    return rim, c, np.stack([rb, ra], axis=1)  # cada borde (a→b) se cierra con el triángulo (b, a, centro)
+
+
+def append_bytes(data, doc, blob, target=None):
+    """Agrega datos al final del bloque binario y devuelve el índice de la nueva vista."""
+    pad = (4 - len(data) % 4) % 4
+    data.extend(bytes(pad))
+    bin_header = 20 + struct.unpack_from("<I", data, 12)[0]
+    offset_in_bin = len(data) - (bin_header + 8)
+    data.extend(blob)
+    struct.pack_into("<I", data, bin_header, len(data) - (bin_header + 8))
+    doc["buffers"][0]["byteLength"] = len(data) - (bin_header + 8)
+    view = {"buffer": 0, "byteOffset": offset_in_bin, "byteLength": len(blob)}
+    if target:
+        view["target"] = target
+    doc["bufferViews"].append(view)
+    return len(doc["bufferViews"]) - 1
+
+
+def add_accessor(data, doc, array, kind, component, target):
+    view = append_bytes(data, doc, np.ascontiguousarray(array).tobytes(), target)
+    acc = {"bufferView": view, "componentType": component, "count": int(len(array)), "type": kind}
+    if kind == "VEC3":
+        acc["min"] = array.min(axis=0).astype(float).tolist()
+        acc["max"] = array.max(axis=0).astype(float).tolist()
+    doc["accessors"].append(acc)
+    return len(doc["accessors"]) - 1
+
+
 def main(src_path, dst_path):
     data, doc, bin_start = read_glb(src_path)
     done = set()
@@ -296,8 +377,58 @@ def main(src_path, dst_path):
             t = local[idx].reshape(-1, 3)
             t = t[(t[:, 0] != t[:, 1]) & (t[:, 1] != t[:, 2]) & (t[:, 0] != t[:, 2])]
             tris.append(t)
-        P, N, moved = refine(np.array(points), np.concatenate(tris), local_axis(doc, mesh_index))
+        all_tris = np.concatenate(tris)
+        P, N, moved = refine(np.array(points), all_tris, local_axis(doc, mesh_index))
+        hole = doc.get("extras", {}).get("orificio_a_tapar")
+        cap = None
+        if hole:
+            P, closed = close_tunnel(P, np.asarray(hole, float), N)
+            if closed:
+                print(f"   túnel del modelo cerrado: {closed} puntos subidos a la superficie")
+                tri = P[all_tris]
+                face = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+                N = np.zeros_like(P)
+                for k_ in range(3):
+                    np.add.at(N, all_tris[:, k_], face)
+                N /= np.maximum(np.linalg.norm(N, axis=1, keepdims=True), 1e-12)
+            cap = cap_hole(P, all_tris, np.asarray(hole, float))
+        capped_prim = None
+        if cap is not None:
+            rim, c, fan = cap
+            ci = len(P)
+            P = np.vstack([P, c])
+            fan_tris = np.c_[fan, np.full(len(fan), ci)]
+            tri = P[np.vstack([all_tris, fan_tris])]
+            face = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+            N = np.zeros_like(P)
+            full = np.vstack([all_tris, fan_tris])
+            for k in range(3):
+                np.add.at(N, full[:, k], face)
+            N /= np.maximum(np.linalg.norm(N, axis=1, keepdims=True), 1e-12)
+            # La tapa va en la mitad que tiene más puntos del borde; los que le faltan se copian ahí.
+            counts = [np.isin(rim, local).sum() for _, local, _ in maps]
+            prim, local, offs = maps[int(np.argmax(counts))]
+            first = {}
+            for li, gi in enumerate(local):
+                first.setdefault(int(gi), li)
+            missing = [int(g) for g in rim if int(g) not in first]
+            extra_globals = missing + [ci]
+            for j, gi in enumerate(extra_globals):
+                first[gi] = len(local) + j
+            idx, _, _ = accessor_view(data, doc, bin_start, prim["indices"])
+            idx = idx.ravel().astype(np.uint32)
+            extra = np.array([first[int(g)] for g in fan_tris.ravel()], dtype=np.uint32)
+            positions = np.vstack([P[local], P[extra_globals]]).astype("<f4")
+            normals = np.vstack([N[local], N[extra_globals]]).astype("<f4")
+            prim["attributes"]["POSITION"] = add_accessor(data, doc, positions, "VEC3", 5126, 34962)
+            prim["attributes"]["NORMAL"] = add_accessor(data, doc, normals, "VEC3", 5126, 34962)
+            prim["indices"] = add_accessor(data, doc, np.concatenate([idx, extra]).astype("<u4"), "SCALAR", 5125, 34963)
+            capped_prim = prim
+            print(f"   orificio tapado: borde de {len(rim)} puntos ({len(missing)} copiados de la otra mitad)")
         for prim, local, offs in maps:
+            if prim is capped_prim:
+                done.add(prim["attributes"]["POSITION"])
+                continue
             write_floats(data, offs, P[local])
             acc = doc["accessors"][prim["attributes"]["POSITION"]]
             acc["min"] = P[local].min(axis=0).astype(float).tolist()

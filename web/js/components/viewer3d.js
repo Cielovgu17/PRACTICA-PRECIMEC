@@ -310,15 +310,36 @@ export class Engine3D {
     this.view('iso');
   }
 
-  // Ejes anatómicos del fémur visible (en el modelo: +y superior, +x medial, +z anterior; es un fémur derecho).
-  // Así las vistas Anterior, Posterior y Superior muestran el hueso bien orientado en cualquier animación.
+  // Ejes anatómicos del fémur, medidos en el modelo (sus coordenadas propias no coinciden con la anatomía:
+  // está girado ~21° sobre su eje y ~7° inclinado). Superior: del centro de la rodilla al centro de la cabeza
+  // femoral (eje mecánico, vertical en posición anatómica). Medial: línea condílea posterior, la referencia
+  // rotacional más estable del fémur distal. Anterior: perpendicular a ambos.
+  static FEMUR_AXES = {
+    superior: [0.0758, 0.992, 0.1006],
+    medial: [0.9315, -0.1065, 0.3479],
+    anterior: [-0.3558, -0.0673, 0.9321],
+  };
+
   anatomicalFrame() {
     const femur = this.meshes.find((mesh) => mesh.visible && /femur/i.test(`${mesh.name} ${mesh.parent?.name || ''}`) && !/canal/i.test(mesh.name));
     if (!femur) return null;
     femur.updateMatrixWorld(true);
-    const x = new THREE.Vector3(); const y = new THREE.Vector3(); const z = new THREE.Vector3();
-    femur.matrixWorld.extractBasis(x, y, z);
-    return { superior: y.normalize(), medial: x.normalize(), anterior: z.normalize() };
+    const rotation = new THREE.Matrix3().setFromMatrix4(femur.matrixWorld);
+    const axis = (v) => new THREE.Vector3(...v).applyMatrix3(rotation).normalize();
+    const a = Engine3D.FEMUR_AXES;
+    return { superior: axis(a.superior), medial: axis(a.medial), anterior: axis(a.anterior) };
+  }
+
+  // La cámara gira alrededor del objetivo con "arriba" fijo; para que el eje del fémur quede vertical en la
+  // pantalla, el control de cámara se rehace con el "arriba" de la vista elegida.
+  setCameraUp(up) {
+    if (this.camera.up.distanceTo(up) < 1e-6) return;
+    const target = this.controls.target.clone();
+    this.controls.dispose();
+    this.camera.up.copy(up);
+    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+    this.controls.enableDamping = true;
+    this.controls.target.copy(target);
   }
 
   view(name) {
@@ -327,14 +348,17 @@ export class Engine3D {
     const horizontal = Math.atan(Math.tan(vertical) * Math.min(this.camera.aspect, 1));
     const distance = (this.radius / Math.sin(Math.min(vertical, horizontal))) * 1.08;
     const f = this.anatomicalFrame() || { superior: new THREE.Vector3(0, 1, 0), medial: new THREE.Vector3(1, 0, 0), anterior: new THREE.Vector3(0, 0, 1) };
-    const direction = {
-      iso: new THREE.Vector3(1, 0.7, 1),
-      anterior: f.anterior.clone(),
-      posterior: f.anterior.clone().negate(),
-      // Desde arriba, con lo anterior a la izquierda y lo posterior a la derecha: la pantalla queda con el
-      // lado lateral (trocánter mayor) arriba. Un leve desvío hacia medial fija ese giro de la imagen.
-      superior: f.superior.clone().addScaledVector(f.medial, 0.002),
-    }[name].normalize();
+    // Anterior: la cara de adelante, con la cabeza femoral a la derecha (fémur derecho). Posterior: al revés.
+    // Superior: desde arriba, con la cabeza arriba en la pantalla y lo anterior a la derecha.
+    const views = {
+      iso: { direction: new THREE.Vector3(1, 0.7, 1), up: new THREE.Vector3(0, 1, 0) },
+      anterior: { direction: f.anterior.clone(), up: f.superior.clone() },
+      posterior: { direction: f.anterior.clone().negate(), up: f.superior.clone() },
+      superior: { direction: f.superior.clone(), up: f.medial.clone() },
+    };
+    const { direction, up } = views[name];
+    direction.normalize();
+    this.setCameraUp(up.normalize());
     this.camera.position.copy(this.center).addScaledVector(direction, distance);
     this.controls.target.copy(this.center);
     this.controls.update();

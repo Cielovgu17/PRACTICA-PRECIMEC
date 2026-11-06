@@ -732,13 +732,18 @@ const ESCENAS = {
     });
     const box3 = new THREE.Box3().setFromObject(bone);
     const c = box3.getCenter(new THREE.Vector3());
-    const views = [['Anterior', [0, 0, 1]], ['Posterior', [0, 0, -1]], ['Interna', [1, 0, 0]], ['Externa', [-1, 0, 0]]];
-    views.forEach(([name, dir], i) => {
+    // Mismos ejes anatómicos que el visor (Engine3D.FEMUR_AXES).
+    const S = new THREE.Vector3(0.0758, 0.992, 0.1006).normalize();
+    const Md = new THREE.Vector3(0.9315, -0.1065, 0.3479).normalize();
+    const A = new THREE.Vector3(-0.3558, -0.0673, 0.9321).normalize();
+    const views = [['Anterior', A, S], ['Posterior', A.clone().negate(), S], ['Interna', Md, S], ['Superior', S, Md]];
+    views.forEach(([name, dir, up], i) => {
       const scene = new THREE.Scene();
-      floorAndLights(scene, { key: [dir[0] + 0.3, 1.5, dir[2] + 0.3], span: 1, floorY: -2 });
+      floorAndLights(scene, { key: [dir.x + 0.3, 1.5, dir.z + 0.3], span: 1, floorY: -2 });
       scene.add(bone.clone());
       const cam = new THREE.PerspectiveCamera(22, 400 / 1000, 0.01, 10);
-      cam.position.set(c.x + dir[0] * 1.3, c.y, c.z + dir[2] * 1.3);
+      cam.position.copy(c).addScaledVector(dir, 1.3);
+      cam.up.copy(up);
       cam.lookAt(c);
       cam.updateMatrixWorld();
       render(scene, cam, { x: i * 400, y: 0, w: 400, h: 1000 });
@@ -947,66 +952,54 @@ const ESCENAS = {
   },
   async '4-2-punto-de-entrada'() {
     await loadFemur();
-    // Ancho anteroposterior del trocánter mayor en el punto de entrada: el punto va en la unión del tercio
-    // anterior con los dos tercios posteriores.
-    let za = -1, zp = 1, topY = -1;
+    // Punto de entrada: la punta del trocánter mayor, su parte más alta (medida en el modelo).
+    const point = new THREE.Vector3(-0.0037, 0.2143, -0.0163);
+    let za = -1, zp = 1;
     femurGeometries.forEach((g) => {
       const pos = g.attributes.position;
       for (let i = 0; i < pos.count; i += 1) {
-        const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
-        if (Math.abs(x - ENTRY.x) < 0.003 && y > 0.17) { za = Math.max(za, z); zp = Math.min(zp, z); }
-        if (Math.abs(x - ENTRY.x) < 0.003 && Math.abs(z - ENTRY.z) < 0.004) topY = Math.max(topY, y);
+        if (Math.abs(pos.getX(i) - point.x) < 0.004 && pos.getY(i) > 0.17) { za = Math.max(za, pos.getZ(i)); zp = Math.min(zp, pos.getZ(i)); }
       }
     });
-    const z13 = za - (za - zp) / 3;
-    const point = new THREE.Vector3(ENTRY.x, topY, z13);
     const scene = new THREE.Scene();
     floorAndLights(scene, { key: [0.6, 2, 2], span: 0.5, floorY: -2 });
     scene.add(femur(M.bone));
     scene.add(ball(0.0058, M.orange, point.toArray()));
     const front = { x: 40, y: 200, w: 660, h: 730 };
-    const camFront = new THREE.PerspectiveCamera(22, front.w / front.h, 0.02, 10);
-    camFront.position.set(0.004, 0.165, 0.52);
-    camFront.lookAt(0.004, 0.165, 0);
-    camFront.updateMatrixWorld();
-    render(scene, camFront, front);
-    // Vista superior: mirando hacia abajo, con lo medial (la cabeza) arriba en la imagen.
+
+    // Vista superior, igual que la del visor: cabeza arriba, trocánter abajo, lo anterior a la derecha.
     const top = { x: 780, y: 200, w: 780, h: 730 };
+    // Mismos ejes anatómicos que el visor (superior = eje mecánico; medial = línea condílea posterior).
+    const SUP = new THREE.Vector3(0.0758, 0.992, 0.1006).normalize();
+    const MED = new THREE.Vector3(0.9315, -0.1065, 0.3479).normalize();
+    const ANT = new THREE.Vector3(-0.3558, -0.0673, 0.9321).normalize();
+    const focus = new THREE.Vector3(0.016, 0.19, 0.002);
     const camTop = new THREE.PerspectiveCamera(24, top.w / top.h, 0.02, 10);
-    camTop.position.set(0.016, 0.56, -0.004);
-    camTop.up.set(1, 0, 0);
-    camTop.lookAt(0.016, 0, -0.004);
+    camTop.position.copy(focus).addScaledVector(SUP, 0.36);
+    camTop.up.copy(MED);
+    camTop.lookAt(focus);
     camTop.updateMatrixWorld();
     render(scene, camTop, top);
+    // De frente: la vista anterior del visor (cabeza a la derecha, eje mecánico vertical).
+    const frontFocus = new THREE.Vector3(0.006, 0.165, 0.004);
+    const camFront = new THREE.PerspectiveCamera(22, front.w / front.h, 0.02, 10);
+    camFront.position.copy(frontFocus).addScaledVector(ANT, 0.52);
+    camFront.up.copy(SUP);
+    camFront.lookAt(frontFocus);
+    camFront.updateMatrixWorld();
+    render(scene, camFront, front);
     const pf = projector(camFront, front);
     const pt = projector(camTop, top);
-    title('Ubicar el punto de entrada', 'Vértice del trocánter mayor, en la unión del tercio anterior con los dos tercios posteriores.');
+    title('Ubicar el punto de entrada', 'En la punta del trocánter mayor: su parte más alta.');
     label(72, 240, 'De frente', { size: 34, weight: 600 });
     label(830, 240, 'Superior', { size: 34, weight: 600 });
-    callout(pf(point.toArray()), 250, 330, ['Vértice del', 'trocánter', 'mayor'], { color: C.orange, anchor: 'end', size: 28 });
-    // Líneas verticales: borde posterior, unión 1/3–2/3 y borde anterior (lo anterior queda a la derecha).
-    const yTop = 0.226;
-    const xs = [-0.04, 0.072];
-    const line = (z, color, dash) => {
-      const a = pt([xs[1], yTop, z]); const b = pt([xs[0], yTop, z]);
-      add('line', { x1: a[0], y1: a[1] - 10, x2: b[0], y2: b[1] + 10, stroke: color, 'stroke-width': 3, ...(dash ? { 'stroke-dasharray': '10 8' } : {}) });
-      return [a, b];
-    };
-    const [pA] = line(zp, C.white);
-    const [aA] = line(za, C.white);
-    const [mA] = line(z13, C.orange, true);
-    // Cotas arriba: 2/3 entre el borde posterior y la línea naranja; 1/3 entre la línea naranja y el borde anterior.
-    const cot = (x1, x2, y, text) => {
-      add('line', { x1, y1: y, x2, y2: y, stroke: C.white, 'stroke-width': 2.5 });
-      for (const x of [x1, x2]) add('line', { x1: x, y1: y - 10, x2: x, y2: y + 10, stroke: C.white, 'stroke-width': 2.5 });
-      label((x1 + x2) / 2, y - 16, text, { size: 30, weight: 600, anchor: 'middle', plate: true });
-    };
-    const yc = Math.min(pA[1], aA[1], mA[1]) - 30;
-    cot(pA[0], mA[0], yc, '2/3');
-    cot(mA[0], aA[0], yc, '1/3');
-    const pB = pt([xs[0], yTop, zp]); const aB = pt([xs[0], yTop, za]);
-    label(pB[0], pB[1] + 52, 'Posterior', { size: 28, anchor: 'middle', plate: true });
-    label(aB[0], aB[1] + 52, 'Anterior', { size: 28, anchor: 'middle', plate: true });
+    callout(pf(point.toArray()), 250, 330, ['Punta del', 'trocánter', 'mayor'], { color: C.orange, anchor: 'end', size: 28 });
+    // Lo anterior queda a la derecha y lo posterior a la izquierda (fémur derecho visto desde arriba).
+    const back = pt(focus.clone().addScaledVector(ANT, -0.05).toArray());
+    const frontP = pt(focus.clone().addScaledVector(ANT, 0.05).toArray());
+    label(back[0], 900, 'Posterior', { size: 28, anchor: 'middle', plate: true });
+    label(frontP[0], 900, 'Anterior', { size: 28, anchor: 'middle', plate: true });
+    callout(pt(point.toArray()), 990, 640, ['Punta del', 'trocánter', 'mayor'], { color: C.orange, anchor: 'end', size: 28 });
     note();
   },
 };

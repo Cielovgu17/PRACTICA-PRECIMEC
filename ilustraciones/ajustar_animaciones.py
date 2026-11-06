@@ -22,7 +22,7 @@ import sys
 
 import numpy as np
 
-PIN_EXTRA = float(__import__("os").environ.get("PIN_EXTRA", 0.110))  # metros que el pin entra de más
+PIN_EXTRA = float(__import__("os").environ.get("PIN_EXTRA", 0.100))  # el pin llega a 250 mm desde la superficie
 PIN_AXIS = np.array([-0.0488, 0.9987, 0.0170])      # dirección del pin, de la punta hacia arriba
 PIN_AXIS = PIN_AXIS / np.linalg.norm(PIN_AXIS)
 ENTRY_Y = 0.2135                                    # altura del punto de entrada en el trocánter mayor
@@ -34,7 +34,8 @@ ENTRY = np.array([-0.0039, 0.2043, -0.0007])        # punto de entrada (centro d
 CANAL_AXIS = PIN_AXIS.copy()
 # El protector de tejidos se apoya sobre el hueso (antes entraba 17,5 mm en él): se sube a lo largo del eje.
 # Con el hueso acomodado (escala 1,15), la camisa queda apoyada en el borde del orificio de entrada.
-PROTECTOR_LIFT = float(__import__("os").environ.get("PROTECTOR_LIFT", 0.0120))
+# El protector se apoya en la superficie del hueso, en la punta del trocánter.
+PROTECTOR_LIFT = float(__import__("os").environ.get("PROTECTOR_LIFT", 0.0275))
 # La broca baja hasta que su tope toca el borde superior de la camisa del protector: en la animación original
 # eso ocurre con la punta en y=0,1203; con el protector 17,5 mm más arriba, el tope toca 17,5 mm antes.
 DRILL_STOP_Y = float(__import__("os").environ.get("DRILL_STOP_Y", 0.1203 + PROTECTOR_LIFT))
@@ -141,44 +142,53 @@ def realign(g, clip, names):
 
 
 # ---------- Hueso acomodado al instrumental ----------
-# Medido en el modelo: la entrada quedaba a 0,40 del ancho del trocánter desde adelante; debe quedar a 1/3.
-# Con la entrada exactamente en 1/3 el pin rozaba la cara anterior del trocánter (que se curva hacia atrás):
-# la entrada queda a 0,40 del ancho, el punto donde el pin va dentro del hueso y centrado en el canal.
-BONE_SHIFT = np.array([0.0, 0.0, -0.0002])
-# Eje del canal (con el hueso ya corrido): recta por la entrada ajustada a los centros del canal (y -0,06 a 0,12).
-BONE_CANAL_AXIS = np.array([-0.02142, 0.99968, 0.01322])
-BONE_CANAL_AXIS = BONE_CANAL_AXIS / np.linalg.norm(BONE_CANAL_AXIS)
-BONE_SCALE = float(__import__("os").environ.get("BONE_SCALE", 1.20))
+# La entrada va en la punta del trocánter mayor (su parte más alta, como en la técnica de Kangli). El
+# instrumental conserva su recorrido; el hueso se ubica con esa punta en la entrada del instrumental (ENTRY,
+# 10 mm más arriba a lo largo del eje: la superficie) y se gira para que el canal siga al pin guía.
+# Elegido midiendo: pin dentro del canal en sus 250 mm, a 6 mm de la superficie del hueso; broca a 5,7 mm de la pared.
+TROCHANTER_TIP = np.array([-0.0037, 0.2143, -0.0163])   # en las coordenadas propias del fémur
+OLD_HOLE = np.array([-0.0039, 0.2043, -0.0007])         # orificio que traía el modelo (se tapa en femur_limpio.py)
+SURFACE_UP = 0.010
+BONE_SCALE = float(__import__("os").environ.get("BONE_SCALE", 1.05))
+BONE_EULER = (np.radians(6.5), 0.0, np.radians(1.5))     # giro (x, y, z) alrededor de la punta
+
+
+def euler_xyz_quat(rx, ry, rz):
+    cx, sx = np.cos(rx / 2), np.sin(rx / 2)
+    cy, sy = np.cos(ry / 2), np.sin(ry / 2)
+    cz, sz = np.cos(rz / 2), np.sin(rz / 2)
+    return np.array([sx * cy * cz + cx * sy * sz, cx * sy * cz - sx * cy * sz,
+                     cx * cy * sz + sx * sy * cz, cx * cy * cz - sx * sy * sz])  # orden XYZ como Three.js
 
 
 def bone_transform():
-    """Traslación, giro (x, y, z, w) y escala del grupo de anatomía: p -> E + S·R·(p + shift - E)."""
-    q = quat_between(BONE_CANAL_AXIS, PIN_AXIS)
+    """p -> A + S·R·(p - punta): traslación, giro (x, y, z, w) y escala del grupo Anatomia."""
+    q = euler_xyz_quat(*BONE_EULER)
     R = quat_matrix(q)
-    t = ENTRY + BONE_SCALE * R @ (BONE_SHIFT - ENTRY)
+    A = ENTRY + SURFACE_UP * PIN_AXIS
+    t = A - BONE_SCALE * R @ TROCHANTER_TIP
     return t, q, BONE_SCALE
 
 
 def anatomia(g):
-    """Corre, gira y agranda el hueso (todo el grupo Anatomia) para que el canal quede centrado en el pin."""
     t, q, s = bone_transform()
     R = quat_matrix(q)
+    Ri = R.T
+    inverse_q = [-q[0], -q[1], -q[2], q[3]]
     for node in g.doc["nodes"]:
-        if node["name"].startswith("Anatomia"):
-            assert not any(k in node for k in ("translation", "rotation", "scale", "matrix")), node["name"]
+        name = node["name"]
+        if name.startswith("Anatomia"):
+            assert not any(k in node for k in ("translation", "rotation", "scale", "matrix")), name
             node["translation"], node["rotation"], node["scale"] = t.tolist(), q.tolist(), [s, s, s]
-        elif node["name"].startswith("Tunel_broca_16.5"):
-            # El túnel lo hace la broca: sigue al instrumental, no al hueso (se compensa el cambio del grupo).
-            Ri = R.T
-            node["translation"] = (-(Ri @ t) / s).tolist()
-            node["rotation"] = [-q[0], -q[1], -q[2], q[3]]
-            node["scale"] = [1 / s] * 3
-    if False:  # engrosado local desactivado: con escala 1,2 la broca ya queda dentro del hueso
-      g.doc.setdefault("extras", {})["eje_instrumental"] = {
-        "entrada": ENTRY.tolist(), "direccion": PIN_AXIS.tolist(),
-        # tramo de la broca (metros a lo largo del eje, desde la entrada) y radio mínimo de hueso alrededor
-        "broca_desde": -0.002, "broca_hasta": -(ENTRY[1] - DRILL_STOP_Y) / PIN_AXIS[1] - 0.004, "radio_minimo": 0.00825 + 0.0015}
-    print(f"   hueso: corrido {BONE_SHIFT[2] * 1000:.1f} mm, girado {np.degrees(2 * np.arccos(min(1, q[3]))):.2f}°, escala {s}")
+        elif name.startswith(("Tunel_broca_16.5", "Abertura_punto_entrada", "Cortical_retirada_por_el_abridor")):
+            # Lo hace el instrumental: sigue al instrumental, no al hueso. La abertura sube a la superficie nueva.
+            delta = np.zeros(3) if name.startswith("Tunel") else SURFACE_UP * PIN_AXIS
+            base = np.array(node.get("translation", [0, 0, 0]), float)
+            node["translation"] = ((Ri @ (base + delta - t)) / s).tolist()
+            node["rotation"] = quat_mul(np.array(inverse_q), np.array([node.get("rotation", [0, 0, 0, 1])], float))[0].tolist()
+            node["scale"] = (np.array(node.get("scale", [1, 1, 1]), float) / s).tolist()
+    g.doc.setdefault("extras", {})["orificio_a_tapar"] = OLD_HOLE.tolist()
+    print(f"   hueso: punta del trocánter en la entrada, girado {np.degrees(2 * np.arccos(min(1, q[3]))):.1f}°, escala {s}")
 
 
 def shift(values, amount):
