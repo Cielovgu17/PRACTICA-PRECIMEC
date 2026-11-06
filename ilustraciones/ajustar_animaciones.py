@@ -660,6 +660,21 @@ def paso4(g):
           f"{n} empujes oscilando ±{np.degrees(OSC_ANGLE):.0f}°")
 
 
+
+def paso43(g):
+    """Paso 4.3 (vástago de inserción, llave combinada y extractor/impactador): el clavo ya viene como queda en el
+    4.2 (30 mm por fuera); solo se ubica el hueso como en los demás pasos, con el canal escariado marcado."""
+    for name in ("Femur_derecho", "Canal_medular_esquematico"):
+        for k in ("translation", "rotation", "scale"):
+            g.node(name).pop(k, None)
+    for node in g.doc["nodes"]:
+        if node["name"].startswith("Canal_escariado_"):
+            node.pop("mesh", None)
+    if not any(n["name"].startswith("Hueso_escariado") for n in g.doc["nodes"]):
+        hueso_escariado_fijo(g)
+    print("4.3: hueso ubicado y canal escariado marcado")
+
+
 if __name__ == "__main__":
     action, src, dst = sys.argv[1:4]
     glb = Glb(src)
@@ -668,7 +683,7 @@ if __name__ == "__main__":
         sin_lineas31(glb)
         anatomia(glb)
     else:
-        {"paso32": paso32, "paso33": paso33, "paso34": paso34, "paso35": paso35, "paso4": paso4}[action](glb)
+        {"paso32": paso32, "paso33": paso33, "paso34": paso34, "paso35": paso35, "paso4": paso4, "paso43": paso43}[action](glb)
         anatomia(glb)
     sin_sobrantes(glb)
     perforaciones_translucidas(glb)
