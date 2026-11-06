@@ -65,6 +65,23 @@ class Glb:
             acc["min"] = values.min(axis=0).astype(float).tolist()
             acc["max"] = values.max(axis=0).astype(float).tolist()
 
+    def append(self, values, kind):
+        """Agrega un arreglo de flotantes al final del archivo y devuelve el número del nuevo accessor."""
+        values = np.ascontiguousarray(values, dtype="<f4")
+        raw = values.tobytes()
+        pad = (4 - len(raw) % 4) % 4
+        offset = self.doc["buffers"][0]["byteLength"]
+        self.data = self.data + raw + bytes(pad)  # copia nueva: los arreglos ya leídos siguen válidos
+        self.doc["buffers"][0]["byteLength"] = offset + len(raw) + pad
+        struct.pack_into("<I", self.data, self.bin - 8, self.doc["buffers"][0]["byteLength"])
+        self.doc["bufferViews"].append({"buffer": 0, "byteOffset": offset, "byteLength": len(raw)})
+        acc = {"bufferView": len(self.doc["bufferViews"]) - 1, "componentType": 5126,
+               "count": len(values), "type": kind}
+        if kind == "SCALAR":
+            acc["min"], acc["max"] = [float(values.min())], [float(values.max())]
+        self.doc["accessors"].append(acc)
+        return len(self.doc["accessors"]) - 1
+
     def clip(self, name):
         return next(a for a in self.doc["animations"] if a["name"] == name)
 
@@ -234,6 +251,15 @@ def guia31(g):
     print(f"   guía 3.1: bordes a ±{GUIDE_HALF_WIDTH*1000:.1f} mm de la entrada, línea del medio por la entrada")
 
 
+def sin_lineas31(g):
+    """Paso 3.1: solo quedan el anillo y la flecha del punto de entrada; las líneas guía no aparecen."""
+    clip = g.doc["animations"][0]
+    for name in ("Guia_tercios_trocanter_mayor", "Eje_trayectoria_abridor", "Indicador_profundidad"):
+        _, out = g.track(clip, name, "scale")
+        g.set_array(out, np.full_like(g.array(out), TINY))
+    print("   3.1: líneas guía ocultas; quedan el anillo y la flecha")
+
+
 def shift(values, amount):
     return values - PIN_EXTRA * amount[:, None] * CANAL_AXIS[None, :]
 
@@ -323,6 +349,46 @@ def paso34(g):
             g.set_array(out, np.full_like(g.array(out), TINY))
             hidden += 1
     print(f"3.4: broca detenida en y={DRILL_STOP_Y} a los {stop_time:.2f} s; anillos ocultos: {hidden}")
+    retirar_broca(g, clip, stop_time)
+
+
+# Al final del 3.4 la broca canulada sale con el perforador por el mismo camino por donde entró (al doble de
+# velocidad), mientras el protector de tejidos y el pin guía se quedan en su lugar.
+RETRACT_PAUSE = 1.5       # s quieta en el tope antes de salir
+RETRACT_SPEED = 2.0
+RETRACT_TO_Y = 0.48       # sale hasta que la punta de la broca queda a esta altura (bien arriba del protector)
+RETRACT_END_HOLD = 1.0
+RETRACTING = ("Broca_canulada_16.5", "Perforador_quirurgico", "Portabrocas_giratorio")
+
+
+def retirar_broca(g, clip, stop_time):
+    ti, oi = g.track(clip, "Broca_canulada_16.5", "translation")
+    t = g.array(ti)[:, 0].astype(float)
+    y = g.array(oi)[:, 1].astype(float)
+    above = np.nonzero((t < stop_time) & (y >= RETRACT_TO_Y))[0]
+    t_out = t[above[-1]]
+    start = stop_time + RETRACT_PAUSE
+    end = start + (stop_time - t_out) / RETRACT_SPEED
+    fps = 1 / np.median(np.diff(t))
+    new_t = np.concatenate([t[t <= start], np.arange(start + 1 / fps, end + RETRACT_END_HOLD + 1e-9, 1 / fps)])
+    source = np.where(new_t <= start, new_t, np.maximum(stop_time - (new_t - start) * RETRACT_SPEED, t_out))
+    hold = np.minimum(new_t, t[-1])
+    new_input = g.append(new_t[:, None], "SCALAR")
+    for ch in clip["channels"]:
+        sampler = clip["samplers"][ch["sampler"]]
+        times = g.array(sampler["input"])[:, 0].astype(float)
+        values = g.array(sampler["output"]).astype(float)
+        name = g.doc["nodes"][ch["target"]["node"]]["name"]
+        at = source if name in RETRACTING else hold
+        if sampler.get("interpolation") == "STEP":
+            out = values[np.clip(np.searchsorted(times, at, "right") - 1, 0, len(times) - 1)]
+        else:
+            out = np.stack([np.interp(at, times, values[:, c]) for c in range(values.shape[1])], axis=1)
+            if ch["target"]["path"] == "rotation":
+                out /= np.linalg.norm(out, axis=1, keepdims=True)
+        sampler["output"] = g.append(out, {1: "SCALAR", 3: "VEC3", 4: "VEC4"}[out.shape[1]])
+        sampler["input"] = new_input
+    print(f"3.4: la broca sale de {start:.1f} a {end:.1f} s (hasta y={RETRACT_TO_Y}); dura {new_t[-1]:.1f} s")
 
 
 if __name__ == "__main__":
@@ -330,6 +396,7 @@ if __name__ == "__main__":
     glb = Glb(src)
     if action == "paso31":
         guia31(glb)
+        sin_lineas31(glb)
         anatomia(glb)
     else:
         {"paso32": paso32, "paso33": paso33, "paso34": paso34}[action](glb)

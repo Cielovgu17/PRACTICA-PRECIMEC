@@ -750,14 +750,14 @@ const ESCENAS = {
     let top = -Infinity; const topPoint = new THREE.Vector3();
     const pos = femurNode.geometry.attributes.position; const v = new THREE.Vector3();
     for (let i = 0; i < pos.count; i += 7) { v.fromBufferAttribute(pos, i).applyMatrix4(femurNode.matrixWorld); if (v.dot(S) > top) { top = v.dot(S); topPoint.copy(v); } }
-    const c = topPoint.clone().addScaledVector(S, -0.13);
+    const c = topPoint.clone().addScaledVector(S, Number(params.get('alto') || -0.13));
     const views = [['De frente (anterior)', A, S], ['De lado (interna)', Md, S]];
     views.forEach(([name, dir, up], i) => {
       const scene = new THREE.Scene();
       floorAndLights(scene, { key: [dir.x + 0.3, 1.5, dir.z + 0.3], span: 1, floorY: -2 });
       scene.add(gltf.scene.clone());
       const cam = new THREE.PerspectiveCamera(20, 800 / 1000, 0.01, 10);
-      cam.position.copy(c).addScaledVector(dir, 0.9);
+      cam.position.copy(c).addScaledVector(dir, Number(params.get('dist') || 0.9));
       cam.up.copy(up);
       cam.lookAt(c);
       cam.updateMatrixWorld();
