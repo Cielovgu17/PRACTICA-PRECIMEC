@@ -192,8 +192,9 @@ def anatomia(g):
             assert not any(k in node for k in ("translation", "rotation", "scale", "matrix")), name
             node["translation"], node["rotation"], node["scale"] = t.tolist(), q.tolist(), [s, s, s]
         elif name.startswith(("Tunel_broca_16.5", "Abertura_punto_entrada", "Cortical_retirada_por_el_abridor")):
-            # Lo hace el instrumental: sigue al instrumental, no al hueso. La abertura sube a la superficie nueva.
-            delta = np.zeros(3) if name.startswith("Tunel") else SURFACE_UP * PIN_AXIS
+            # Lo hace el instrumental: sigue al instrumental, no al hueso. El túnel y el hueco de la abertura quedan
+            # donde los dejó el instrumental (el hueco termina justo bajo la superficie, sin asomarse por fuera).
+            delta = np.zeros(3) if name.startswith(("Tunel", "Abertura")) else SURFACE_UP * PIN_AXIS
             base = np.array(node.get("translation", [0, 0, 0]), float)
             node["translation"] = ((Ri @ (base + delta - t)) / s).tolist()
             node["rotation"] = quat_mul(np.array(inverse_q), np.array([node.get("rotation", [0, 0, 0, 1])], float))[0].tolist()
@@ -265,7 +266,7 @@ def sin_sobrantes(g):
     hueso esponjoso de la abertura (quedaba por fuera del fémur). Los nodos quedan, sin malla."""
     removed = 0
     for node in g.doc["nodes"]:
-        if node["name"].startswith(("Cortical_entrada_", "Abertura_")) and "mesh" in node:
+        if node["name"].startswith("Cortical_entrada_") and "mesh" in node:
             del node["mesh"]
             removed += 1
     print(f"   sobrantes quitados: {removed}")
