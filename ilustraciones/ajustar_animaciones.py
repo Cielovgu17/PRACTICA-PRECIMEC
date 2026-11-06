@@ -578,6 +578,74 @@ def canal_escariado(g, new, nt, vis):
     return count
 
 
+# ---------- Paso 4: montaje e inserción del clavo ----------
+# Un solo archivo para dos pasos del instructivo (el visor muestra un tramo de tiempo y oculta piezas):
+#   4.1 (10 a 32 s): se fija el clavo en el mango con el tornillo de conexión y su llave; sin el hueso.
+#   4.2 (32 s al final): el clavo entra al canal con movimientos oscilantes del mango y se detiene con
+#        NAIL_STOP de recorrido pendiente (30 mm del clavo por fuera), para terminar con el martillo en 4.3-4.4.
+INSERT_FROM, INSERT_TO = 34.0, 50.0     # s: tramo de la inserción en la animación original
+NAIL_SHORT = 0.040                      # el clavo para 40 mm antes del final original (punta a 210 mm)
+OSC_PUSHES = 8
+OSC_ANGLE = np.radians(15)
+
+
+def hueso_escariado_fijo(g, radius=0.00525):
+    """Canal escariado del paso 3.5, ya completo (Φ10,5 de 50 a 245 mm), quieto."""
+    A = ENTRY + SURFACE_UP * PIN_AXIS
+    base = next(m for m in g.doc["materials"] if m["name"] == "Hueso_esponjoso_abertura")
+    g.doc["materials"].append({"name": "Hueso_escariado_marcado", "doubleSided": True,
+                               "pbrMetallicRoughness": dict(base["pbrMetallicRoughness"]),
+                               "emissiveFactor": [0.35, 0.17, 0.11]})
+    length = REAM_DEPTH - REAMED_FROM
+    ang = np.linspace(0, 2 * np.pi, 33)
+    ring = np.stack([np.cos(ang), np.zeros_like(ang), np.sin(ang)], 1)
+    pos = np.concatenate([ring * radius, ring * radius + [0, -length, 0]]).astype("<f4")
+    nor = np.concatenate([ring, ring]).astype("<f4")
+    idx = np.array([v for i in range(32) for v in (i, 33 + i, i + 1, i + 1, 33 + i, 34 + i)], "<u2")
+    prim = {"attributes": {"POSITION": g.append_raw(pos, 5126, "VEC3", 34962), "NORMAL": g.append_raw(nor, 5126, "VEC3", 34962)},
+            "indices": g.append_raw(idx, 5123, "SCALAR", 34963), "material": len(g.doc["materials"]) - 1}
+    g.doc["meshes"].append({"name": "Hueso_escariado_D10.5", "primitives": [prim]})
+    instrumental = next(i for i, n in enumerate(g.doc["nodes"]) if n["name"] == "Instrumental")
+    g.doc["nodes"].append({"name": "Hueso_escariado_Φ10,5", "mesh": len(g.doc["meshes"]) - 1,
+                           "translation": (A - REAMED_FROM * PIN_AXIS).tolist(),
+                           "rotation": quat_between(np.array([0.0, 1.0, 0.0]), PIN_AXIS).tolist()})
+    g.doc["nodes"][instrumental].setdefault("children", []).append(len(g.doc["nodes"]) - 1)
+
+
+def paso4(g):
+    clip = g.doc["animations"][0]
+    for name in ("Femur_derecho", "Canal_medular_esquematico"):
+        for k in ("translation", "rotation", "scale"):
+            g.node(name).pop(k, None)
+    for node in g.doc["nodes"]:                      # los anillos sueltos del escariado se reemplazan por el tubo
+        if node["name"].startswith("Canal_escariado_"):
+            node.pop("mesh", None)
+    hueso_escariado_fijo(g)
+    name = "Clavo_cefalomedular_conjunto"
+    ti, oi = g.track(clip, name, "translation")
+    t = g.array(ti)[:, 0].astype(float)
+    pos = g.array(oi).astype(float)
+    start = np.array([np.interp(INSERT_FROM, t, pos[:, c]) for c in range(3)])
+    end = np.array([np.interp(INSERT_TO, t, pos[:, c]) for c in range(3)])
+    travel = (start - end) @ PIN_AXIS - NAIL_SHORT
+    tau = np.clip((t - INSERT_FROM) / (INSERT_TO - INSERT_FROM), 0, 1)
+    n = OSC_PUSHES
+    progress = tau - np.sin(2 * np.pi * n * tau) / (2 * np.pi * n)     # avanza a empujes, siempre hacia adentro
+    new_pos = np.where((t < INSERT_FROM)[:, None], pos, start - (progress * travel)[:, None] * PIN_AXIS)
+    g.set_array(oi, new_pos.astype(np.float32))
+    # Oscilación del mango alrededor del eje del clavo mientras entra.
+    q0 = np.array(g.node(name).get("rotation", [0, 0, 0, 1]), float)
+    theta = OSC_ANGLE * np.sin(2 * np.pi * n * tau) * np.sin(np.pi * tau)
+    rots = np.array([quat_mul(np.array([*(PIN_AXIS * np.sin(a / 2)), np.cos(a / 2)]), q0[None])[0] for a in theta])
+    sampler_in = clip["samplers"][0]["input"]
+    clip["samplers"].append({"input": sampler_in, "output": g.append(rots, "VEC4"), "interpolation": "LINEAR"})
+    clip["channels"].append({"sampler": len(clip["samplers"]) - 1,
+                             "target": {"node": next(i for i, x in enumerate(g.doc["nodes"]) if x["name"] == name), "path": "rotation"}})
+    tip_depth = ((ENTRY + SURFACE_UP * PIN_AXIS) - new_pos[-1]) @ PIN_AXIS
+    print(f"4: clavo hasta {tip_depth*1000:.0f} mm (queda {240 - tip_depth*1000:.0f} mm del clavo por fuera); "
+          f"{n} empujes oscilando ±{np.degrees(OSC_ANGLE):.0f}°")
+
+
 if __name__ == "__main__":
     action, src, dst = sys.argv[1:4]
     glb = Glb(src)
@@ -586,7 +654,7 @@ if __name__ == "__main__":
         sin_lineas31(glb)
         anatomia(glb)
     else:
-        {"paso32": paso32, "paso33": paso33, "paso34": paso34, "paso35": paso35}[action](glb)
+        {"paso32": paso32, "paso33": paso33, "paso34": paso34, "paso35": paso35, "paso4": paso4}[action](glb)
         anatomia(glb)
     sin_sobrantes(glb)
     glb.save(dst)

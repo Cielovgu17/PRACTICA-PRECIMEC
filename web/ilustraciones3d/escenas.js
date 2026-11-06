@@ -726,7 +726,7 @@ const ESCENAS = {
     const clip = gltf.animations[Number(params.get('clip') || gltf.animations.length - 1)];
     const targets = new Set(clip.tracks.map((tr) => tr.name.split('.')[0]));
     const roots = gltf.scene.children.length === 1 && gltf.scene.children[0].children.length > 1 ? gltf.scene.children[0].children : gltf.scene.children;
-    roots.forEach((root) => {
+    if (gltf.animations.length > 1) roots.forEach((root) => {
       let used = false;
       root.traverse((n) => { if (targets.has(n.name)) used = true; });
       root.visible = used;
@@ -738,8 +738,9 @@ const ESCENAS = {
     gltf.scene.traverseVisible((node) => {
       if (!node.isMesh) return;
       if (/^Femur/.test(node.name)) { femurNode = femurNode || node; node.material = boneGlass(0.28); }
-      if (/^Canal/.test(node.name)) node.material = new THREE.MeshStandardMaterial({ color: 0x4f8fd8, transparent: true, opacity: 0.45, depthWrite: false, side: THREE.DoubleSide });
+      if (/^Canal_medular/.test(node.name)) node.material = new THREE.MeshStandardMaterial({ color: 0x4f8fd8, transparent: true, opacity: 0.45, depthWrite: false, side: THREE.DoubleSide });
       if (/Camara|Vista_/.test(node.name)) node.visible = false;
+      if (params.get('sin_canal') && /^Canal_medular/.test(node.name)) node.visible = false;
     });
     const q = new THREE.Quaternion(); femurNode.getWorldQuaternion(q);
     const S = new THREE.Vector3(0.0758, 0.992, 0.1006).normalize().applyQuaternion(q);
