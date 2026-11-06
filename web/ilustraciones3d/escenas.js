@@ -748,8 +748,12 @@ const ESCENAS = {
     // Encuadre: los 280 mm de arriba del hueso (donde va el pin).
     const box3 = new THREE.Box3().setFromObject(femurNode);
     let top = -Infinity; const topPoint = new THREE.Vector3();
-    const pos = femurNode.geometry.attributes.position; const v = new THREE.Vector3();
-    for (let i = 0; i < pos.count; i += 7) { v.fromBufferAttribute(pos, i).applyMatrix4(femurNode.matrixWorld); if (v.dot(S) > top) { top = v.dot(S); topPoint.copy(v); } }
+    const v = new THREE.Vector3();
+    gltf.scene.traverseVisible((node) => {
+      if (!node.isMesh || !/^Femur/.test(node.name)) return;
+      const pos = node.geometry.attributes.position;
+      for (let i = 0; i < pos.count; i += 7) { v.fromBufferAttribute(pos, i).applyMatrix4(node.matrixWorld); if (v.dot(S) > top) { top = v.dot(S); topPoint.copy(v); } }
+    });
     const c = topPoint.clone().addScaledVector(S, Number(params.get('alto') || -0.13));
     const views = [['De frente (anterior)', A, S], ['De lado (interna)', Md, S]];
     views.forEach(([name, dir, up], i) => {

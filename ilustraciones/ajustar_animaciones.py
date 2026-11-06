@@ -260,6 +260,17 @@ def sin_lineas31(g):
     print("   3.1: líneas guía ocultas; quedan el anillo y la flecha")
 
 
+def sin_sobrantes(g):
+    """Quita los trocitos de cortical sobre la entrada (se veían como una sombra bajo el anillo) y el cono de
+    hueso esponjoso de la abertura (quedaba por fuera del fémur). Los nodos quedan, sin malla."""
+    removed = 0
+    for node in g.doc["nodes"]:
+        if node["name"].startswith(("Cortical_entrada_", "Abertura_")) and "mesh" in node:
+            del node["mesh"]
+            removed += 1
+    print(f"   sobrantes quitados: {removed}")
+
+
 def shift(values, amount):
     return values - PIN_EXTRA * amount[:, None] * CANAL_AXIS[None, :]
 
@@ -401,4 +412,5 @@ if __name__ == "__main__":
     else:
         {"paso32": paso32, "paso33": paso33, "paso34": paso34}[action](glb)
         anatomia(glb)
+    sin_sobrantes(glb)
     glb.save(dst)
