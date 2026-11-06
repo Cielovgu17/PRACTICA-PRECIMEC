@@ -1011,19 +1011,20 @@ const ESCENAS = {
     const scene = new THREE.Scene();
     floorAndLights(scene, { key: [0.6, 2, 2], span: 0.5, floorY: -2 });
     scene.add(femur(M.bone));
-    scene.add(ball(0.0058, M.orange, point.toArray()));
+    const entryBall = ball(0.0058, M.orange, point.toArray());   // solo en la vista de frente
     const front = { x: 40, y: 200, w: 660, h: 730 };
 
-    // Vista superior, igual que la del visor: cabeza arriba, trocánter abajo, lo anterior a la derecha.
+    // Vista superior como la de Kangli: cabeza justo arriba del trocánter (el cuello vertical en la imagen), tres
+    // líneas paralelas a ese eje: borde anterior, borde posterior y la del tercio anterior (1/3 adelante, 2/3 atrás).
     const top = { x: 780, y: 200, w: 780, h: 730 };
-    // Mismos ejes anatómicos que el visor (superior = eje mecánico; medial = línea condílea posterior).
     const SUP = new THREE.Vector3(0.0758, 0.992, 0.1006).normalize();
-    const MED = new THREE.Vector3(0.9315, -0.1065, 0.3479).normalize();
     const ANT = new THREE.Vector3(-0.3558, -0.0673, 0.9321).normalize();
-    const focus = new THREE.Vector3(0.016, 0.19, 0.002);
-    const camTop = new THREE.PerspectiveCamera(24, top.w / top.h, 0.02, 10);
-    camTop.position.copy(focus).addScaledVector(SUP, 0.36);
-    camTop.up.copy(MED);
+    const HEAD = new THREE.Vector3(0.0429, 0.1977, 0.0245);
+    const upTop = HEAD.clone().sub(point).projectOnPlane(SUP).normalize();
+    const focus = point.clone().lerp(HEAD, 0.5);
+    const camTop = new THREE.PerspectiveCamera(16, top.w / top.h, 0.02, 10);
+    camTop.position.copy(focus).addScaledVector(SUP, 0.5);
+    camTop.up.copy(upTop);
     camTop.lookAt(focus);
     camTop.updateMatrixWorld();
     render(scene, camTop, top);
@@ -1034,33 +1035,47 @@ const ESCENAS = {
     camFront.up.copy(SUP);
     camFront.lookAt(frontFocus);
     camFront.updateMatrixWorld();
+    scene.add(entryBall);
     render(scene, camFront, front);
     const pf = projector(camFront, front);
     const pt = projector(camTop, top);
-    // Guía de la vista superior: bordes anterior y posterior de la cima del trocánter, la mitad por la entrada
-    // y una línea de adelante hacia atrás que cruza en la entrada (los mismos 14,7 mm del paso 3.1).
-    const guide = (a, b, dashed) => {
-      const [x1, y1] = pt(a.toArray()); const [x2, y2] = pt(b.toArray());
-      add('line', { x1, y1, x2, y2, stroke: C.white, 'stroke-width': dashed ? 3 : 4, 'stroke-dasharray': dashed ? '12 9' : 'none', 'stroke-linecap': 'round' });
-    };
-    const lifted = point.clone().addScaledVector(SUP, 0.002);
-    [-0.0147, 0, 0.0147].forEach((a) => {
-      const c = lifted.clone().addScaledVector(ANT, a);
-      guide(c.clone().addScaledVector(MED, -0.018), c.clone().addScaledVector(MED, 0.018), a !== 0);
+    // Silueta vista desde arriba (parte alta del fémur): bordes izquierdo y derecho en la imagen.
+    let xMin = Infinity, xMax = -Infinity;
+    const v = new THREE.Vector3();
+    femurGeometries.forEach((g) => {
+      const pos = g.attributes.position;
+      for (let i = 0; i < pos.count; i += 3) {
+        v.fromBufferAttribute(pos, i);
+        if (v.clone().sub(point).dot(SUP) < -0.09) continue;
+        const [x] = pt(v.toArray());
+        xMin = Math.min(xMin, x); xMax = Math.max(xMax, x);
+      }
     });
-    guide(lifted.clone().addScaledVector(ANT, -0.0147), lifted.clone().addScaledVector(ANT, 0.0147), false);
-    const [cx, cy] = pt(lifted.toArray());
-    add('circle', { cx, cy, r: 9, fill: C.orange, stroke: C.white, 'stroke-width': 3 });
-    title('Ubicar el punto de entrada', 'De frente, en la punta del trocánter mayor; desde arriba, en la mitad.');
+    const antRight = pt(point.clone().addScaledVector(ANT, 0.02).toArray())[0] > pt(point.toArray())[0];
+    const xFront = antRight ? xMax : xMin, xBack = antRight ? xMin : xMax;
+    const xThird = xFront + (xBack - xFront) / 3;
+    const [ex, ey] = pt(point.toArray());
+    window.TERCIO = ((ex - xFront) / (xBack - xFront)).toFixed(3);   // dónde cae la entrada (0 adelante, 1 atrás)
+    const yTop = top.y + 70, yBottom = top.y + top.h - 20;
+    const vline = (x, w) => add('line', { x1: x, y1: yTop, x2: x, y2: yBottom, stroke: C.orange, 'stroke-width': w, 'stroke-linecap': 'round' });
+    vline(xFront, 4); vline(xBack, 4); vline(xThird, 4);
+    const arrowRow = yTop + 22;
+    const span = (x1, x2, text) => {
+      add('line', { x1: x1 + 6, y1: arrowRow, x2: x2 - 6, y2: arrowRow, stroke: C.orange, 'stroke-width': 3 });
+      [[x1 + 6, 1], [x2 - 6, -1]].forEach(([x, d]) => add('path', { d: `M${x + 12 * d} ${arrowRow - 7}L${x} ${arrowRow}L${x + 12 * d} ${arrowRow + 7}`, fill: 'none', stroke: C.orange, 'stroke-width': 3 }));
+      label((x1 + x2) / 2, arrowRow - 12, text, { size: 26, color: C.orange, weight: 600, anchor: 'middle' });
+    };
+    const [l1, r1] = [Math.min(xFront, xThird), Math.max(xFront, xThird)];
+    const [l2, r2] = [Math.min(xThird, xBack), Math.max(xThird, xBack)];
+    span(l1, r1, '1/3'); span(l2, r2, '2/3');
+    add('circle', { cx: xThird, cy: ey, r: 12, fill: C.orange, stroke: C.white, 'stroke-width': 3 });
+    title('Ubicar el punto de entrada', 'De frente, en la punta del trocánter mayor; desde arriba, en el tercio anterior.');
     label(72, 240, 'De frente', { size: 34, weight: 600 });
     label(830, 240, 'Superior', { size: 34, weight: 600 });
     callout(pf(point.toArray()), 250, 330, ['Punta del', 'trocánter', 'mayor'], { color: C.orange, anchor: 'end', size: 28 });
-    // Lo anterior queda a la derecha y lo posterior a la izquierda (fémur derecho visto desde arriba).
-    const back = pt(focus.clone().addScaledVector(ANT, -0.05).toArray());
-    const frontP = pt(focus.clone().addScaledVector(ANT, 0.05).toArray());
-    label(back[0], 900, 'Posterior', { size: 28, anchor: 'middle', plate: true });
-    label(frontP[0], 900, 'Anterior', { size: 28, anchor: 'middle', plate: true });
-    callout(pt(point.toArray()), 990, 640, ['En la mitad,', 'entre adelante', 'y atrás'], { color: C.orange, anchor: 'end', size: 28 });
+    label(xFront + (antRight ? 14 : -14), yBottom - 40, 'Anterior', { size: 28, anchor: antRight ? 'start' : 'end', plate: true });
+    label(xBack + (antRight ? -14 : 14), yBottom - 40, 'Posterior', { size: 28, anchor: antRight ? 'end' : 'start', plate: true });
+    callout([xThird, ey], antRight ? xFront + 40 : xFront - 40, ey - 90, ['Punto de', 'entrada'], { color: C.orange, anchor: antRight ? 'start' : 'end', size: 28 });
     note();
   },
 };
