@@ -289,6 +289,20 @@ def sin_sobrantes(g):
     print(f"   sobrantes quitados: {removed}")
 
 
+HOLE_ALPHA = 0.4
+
+
+def perforaciones_translucidas(g):
+    """El hueco de la abertura, el túnel de la broca y el canal escariado se ven, pero dejan ver lo de adentro
+    (el pin, la broca, el escariador o el clavo)."""
+    for m in g.doc["materials"]:
+        if m["name"].startswith(("Hueso_esponjoso_abertura", "Hueso_escariado_marcado")):
+            pbr = m.setdefault("pbrMetallicRoughness", {})
+            pbr["baseColorFactor"] = list(pbr.get("baseColorFactor", [1, 1, 1, 1]))[:3] + [HOLE_ALPHA]
+            m["alphaMode"] = "BLEND"
+            m["doubleSided"] = True
+
+
 def shift(values, amount):
     return values - PIN_EXTRA * amount[:, None] * CANAL_AXIS[None, :]
 
@@ -657,4 +671,5 @@ if __name__ == "__main__":
         {"paso32": paso32, "paso33": paso33, "paso34": paso34, "paso35": paso35, "paso4": paso4}[action](glb)
         anatomia(glb)
     sin_sobrantes(glb)
+    perforaciones_translucidas(glb)
     glb.save(dst)
