@@ -92,7 +92,20 @@ export class Engine3D {
       }
     }
     this.controls.update();
+    this.fitClipping();
     this.renderer.render(this.scene, this.camera);
+  }
+
+  // El plano de recorte cercano sigue al acercamiento: si quedara fijo según el tamaño de toda la escena (que
+  // crece cuando una pieza se aleja mucho), al acercarse a una pieza se cortaría y se vería su interior.
+  fitClipping() {
+    if (!this.radius) return;
+    const distance = this.camera.position.distanceTo(this.controls.target);
+    const near = Math.max(distance / 200, this.radius / 100000);
+    if (Math.abs(near - this.camera.near) > near * 0.05) {
+      this.camera.near = near;
+      this.camera.updateProjectionMatrix();
+    }
   }
 
   applyTime() {

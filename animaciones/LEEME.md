@@ -22,4 +22,6 @@ estas son copias con las correcciones aplicadas por las herramientas de `ilustra
 | paso12_pin_guia_roscado_KTO-PFNA - centrado en la cabeza.glb | 6.3 Retirar el trocar, montar el pin guía roscado y asistir la perforación |
 | Animacion_Insercion_Hoja_PFNA.glb | 6.8 Entregar el martillo para impactar la hoja |
 
-Bloqueo proximal (6.1, 6.2 y 6.4): `ajustar_animaciones.py bloqueo` gira el brazo de soporte, las guías, el perforador y el pin 16,8° alrededor del orificio del clavo para que el pin vaya por el centro del cuello y de la cabeza, con la punta a 12,5 mm del borde. El clavo y el mango no se mueven, así que el brazo queda algo separado del mango.
+Bloqueo proximal: para que el pin guía vaya por el centro de la cabeza sin que las piezas se atraviesen, se conserva el ángulo del instrumental (CCD 130°) y `ajustar_animaciones.py` baja 25 mm el orificio de la hoja en el clavo (la parte proximal gruesa queda más larga; se aplica en todos los pasos desde el 5.1) y alarga 25 mm el tramo recto del brazo de soporte. Las guías, el perforador y el pin bajan lo mismo, sin girar.
+
+`aligerar.py` promedia los puntos de cada pieza completa (no por partes) para que no queden rendijas entre las partes en que Blender divide las piezas grandes.

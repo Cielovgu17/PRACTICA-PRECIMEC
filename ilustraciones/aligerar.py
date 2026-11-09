@@ -36,7 +36,28 @@ def accessor(doc, binary, index):
     return np.ascontiguousarray(rows).view(dtype).reshape(acc["count"], n)
 
 
-def simplify(positions, normals, extra, indices, cell):
+def cell_code(positions, cell):
+    k = np.floor(positions / cell).astype(np.int64) + (1 << 20)
+    return (k[:, 0] << 42) | (k[:, 1] << 21) | k[:, 2]
+
+
+def shared_clusters(parts, cell):
+    """Promedios por celda de TODAS las partes de una pieza. Blender parte las piezas grandes en muchas partes;
+    si cada parte se promediara por separado, sus bordes dejarían de coincidir y quedarían rendijas."""
+    codes = np.concatenate([cell_code(p, cell) for p, _ in parts])
+    ucodes, inverse, counts = np.unique(codes, return_inverse=True, return_counts=True)
+    pos = np.zeros((len(ucodes), 3))
+    np.add.at(pos, inverse, np.concatenate([p for p, _ in parts]))
+    pos /= counts[:, None]
+    nor = None
+    if all(n is not None for _, n in parts):
+        nor = np.zeros((len(ucodes), 3))
+        np.add.at(nor, inverse, np.concatenate([n for _, n in parts]))
+        nor /= np.maximum(np.linalg.norm(nor, axis=1, keepdims=True), 1e-12)
+    return ucodes, pos, nor
+
+
+def simplify(positions, normals, extra, indices, cell, shared=None):
     keys = np.floor(positions / cell).astype(np.int64)
     _, cluster, counts = np.unique(keys, axis=0, return_inverse=True, return_counts=True)
     cluster = cluster.ravel()
@@ -51,12 +72,27 @@ def simplify(positions, normals, extra, indices, cell):
         nor = np.zeros((k, 3))
         np.add.at(nor, cluster, normals)
         nor /= np.maximum(np.linalg.norm(nor, axis=1, keepdims=True), 1e-12)
+    if shared is not None:                       # mismos puntos que las demás partes de la pieza
+        ucodes, spos, snor = shared
+        first = np.zeros(k, np.int64)
+        first[cluster] = np.arange(len(cluster))
+        row = np.searchsorted(ucodes, cell_code(positions[first], cell))
+        pos = spos[row]
+        if nor is not None and snor is not None:
+            nor = snor[row]
     ext = {name: mean(v) for name, v in extra.items()}
     tri = cluster[indices.reshape(-1, 3)]
     keep = (tri[:, 0] != tri[:, 1]) & (tri[:, 1] != tri[:, 2]) & (tri[:, 0] != tri[:, 2])
     tri = tri[keep]
     _, first = np.unique(np.sort(tri, axis=1), axis=0, return_index=True)   # sin triángulos repetidos
-    return pos, nor, ext, tri[np.sort(first)]
+    tri = tri[np.sort(first)]
+    if nor is not None:
+        # Al juntar puntos algunos triángulos quedan al revés (se ven como rayas o huecos): se voltean según la
+        # dirección de la superficie en sus tres puntos.
+        face = np.cross(pos[tri[:, 1]] - pos[tri[:, 0]], pos[tri[:, 2]] - pos[tri[:, 0]])
+        flip = np.einsum("ij,ij->i", face, nor[tri].sum(axis=1)) < 0
+        tri[flip] = tri[flip][:, [0, 2, 1]]
+    return pos, nor, ext, tri
 
 
 def main():
@@ -84,10 +120,17 @@ def main():
     before = after = 0
     for mesh in doc["meshes"]:
         total = sum(doc["accessors"][p["attributes"]["POSITION"]]["count"] for p in mesh["primitives"])
+        usable = lambda p: "indices" in p and p.get("mode", 4) == 4 and "targets" not in p
+        shared = None
+        if total >= min_points:
+            shared = shared_clusters([(accessor(doc, binary, p["attributes"]["POSITION"]).astype(float),
+                                       accessor(doc, binary, p["attributes"]["NORMAL"]).astype(float)
+                                       if "NORMAL" in p["attributes"] else None)
+                                      for p in mesh["primitives"] if usable(p)], cell)
         for prim in mesh["primitives"]:
             count = doc["accessors"][prim["attributes"]["POSITION"]]["count"]
             before += count
-            if total < min_points or count < 200 or "indices" not in prim or prim.get("mode", 4) != 4 or "targets" in prim:
+            if total < min_points or not usable(prim):
                 after += count
                 continue
             pos = accessor(doc, binary, prim["attributes"]["POSITION"]).astype(float)
@@ -98,7 +141,7 @@ def main():
             for name in others:
                 del prim["attributes"][name]
             idx = accessor(doc, binary, prim["indices"]).ravel().astype(np.int64)
-            p, n, e, tri = simplify(pos, nor, extra, idx, cell)
+            p, n, e, tri = simplify(pos, nor, extra, idx, cell, shared)
             after += len(p)
             attrs = {"POSITION": ("new", add(p, 5126, "VEC3", 34962))}
             if n is not None:
@@ -108,6 +151,9 @@ def main():
             prim["attributes"] = attrs
             component = 5123 if len(p) < 65535 else 5125
             prim["indices"] = ("new", add(tri.ravel(), component, "SCALAR", 34963))
+            # Al juntar puntos, algunos triángulos quedan al revés; con una sola cara se verían como huecos.
+            if "material" in prim:
+                doc["materials"][prim["material"]]["doubleSided"] = True
             mesh["_antes"] = mesh.get("_antes", 0) + count
             mesh["_despues"] = mesh.get("_despues", 0) + len(p)
 

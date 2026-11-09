@@ -635,6 +635,7 @@ def paso4(g):
         if node["name"].startswith("Canal_escariado_"):
             node.pop("mesh", None)
     hueso_escariado_fijo(g)
+    clavo_orificio_bajo(g)
     name = "Clavo_cefalomedular_conjunto"
     ti, oi = g.track(clip, name, "translation")
     t = g.array(ti)[:, 0].astype(float)
@@ -672,27 +673,41 @@ def paso43(g):
             node.pop("mesh", None)
     if not any(n["name"].startswith("Hueso_escariado") for n in g.doc["nodes"]):
         hueso_escariado_fijo(g)
+    clavo_orificio_bajo(g)
     print("4.3: hueso ubicado y canal escariado marcado")
 
 
 # ---------- Bloqueo proximal (pasos 6.1, 6.2 y 6.4): brazo de soporte, guías y pin guía hacia la cabeza ----------
 # Como venían de Blender, el pin guía roscado cruzaba el orificio del clavo (NAIL_HOLE) pero pasaba 16 mm por encima
-# del centro de la cabeza del fémur. Se gira todo el conjunto de guías (brazo, perilla, manguitos, casquillo, tuerca,
-# perforador y pin) alrededor del orificio del clavo para que el pin vaya por el centro del cuello y de la cabeza,
-# como en la técnica de Kang-Li. El pin sigue pasando por el orificio (holgura ~2 mm). El clavo y el mango no se
-# mueven, así que el brazo queda separado del mango (~36 mm): se eligió el giro que lo deja lo más cerca posible.
+# del centro de la cabeza del fémur. Girar las guías chocaba el brazo con el mango, así que se conserva el ángulo del
+# instrumental (el brazo dice CCD 130°) y se baja el orificio del clavo HOLE_DROP a lo largo del clavo:
+#   * clavo (clavo_orificio_bajo): la parte proximal gruesa se alarga y el orificio queda 25 mm más abajo; la punta
+#     de arriba (donde va el mango) y la parte distal no cambian. Se aplica en todos los pasos con el clavo.
+#   * brazo de soporte (brazo_alargado): se alarga 25 mm en su tramo recto; la parte que se une al mango y la perilla
+#     no se mueven, y el bloque de las guías baja sin girar.
+#   * manguitos, casquillo, tuerca, trocar, perforador, pin e indicador bajan lo mismo (sin girar).
+# Así el pin va por el centro del cuello y de la cabeza (como en la técnica de Kang-Li) y nada se atraviesa.
 # Medido en las coordenadas del instrumental (el hueso ya ubicado con anatomia()).
 NAIL_HOLE = np.array([-0.0040, 0.1658, -0.0026])         # donde el pin cruza el eje del clavo
 HEAD_CENTER = np.array([0.0454, 0.1953, 0.0373])         # centro de la cabeza (esfera ajustada, radio 26,9 mm)
 HEAD_RADIUS = 0.0269
 PIN12_DIR = np.array([0.5783, 0.6653, 0.4721])           # dirección original del pin (hacia la cabeza)
 PIN12_TIP = np.array([0.0371, 0.2130, 0.0309])           # punta original del pin al final del paso 12
-GUIDE_ROT = np.array([[0.975867, 0.218232, -0.00769],    # giro mínimo de PIN12_DIR al centro, con el giro propio
-                      [-0.215598, 0.957301, -0.192592],  # (alrededor del pin) que acerca más el brazo al mango
-                      [-0.034668, 0.189602, 0.981249]])
+GUIDE_ROT = np.eye(3)                                     # las guías ya no giran
+NAIL_AXIS = np.array([-0.1053, 0.9942, -0.0222]) / np.linalg.norm([-0.1053, 0.9942, -0.0222])   # hacia arriba
+HOLE_DROP = 0.0250                                        # medido: así la recta del pin pasa a 0,9 mm del centro
+GUIDE_SHIFT = -HOLE_DROP * NAIL_AXIS
 TIP_FROM_EDGE = 0.0125                                    # la punta queda a 10-15 mm del borde de la cabeza
-GUIDE_PIECES = ("Varilla_Refuerzo_brazo_de_soporte", "Pieza_Roscada_perilla_M8",
-                "Conjunto_de_guias_Blade_Nail_Combination_Sleeve", "Blade_Nail_Combination_Sleeve_Tubo_malla",
+# En coordenadas del clavo (Clavo_cefalomedular_conjunto; la malla del clavo no tiene transformación propia):
+NAIL_AXIS_C = np.array([-0.0669, -0.0001, 0.9978])
+HOLE_C = np.array([-0.0022, 0.0, 0.2017])
+NAIL_RIGID = 0.012          # ±12 mm alrededor del orificio bajan enteros
+NAIL_TOP_FIXED = 0.034      # desde 34 mm sobre el orificio (la punta de arriba está a 38 mm) no se mueve
+NAIL_LOW_FIXED = -0.100     # desde 100 mm bajo el orificio no se mueve
+ARM_BLOCK = np.array([-0.1183, 0.0, 0.1044])              # bloque del brazo por donde pasan las guías
+ARM_UP = np.array([-0.025, 0.0, 1.0]) / np.linalg.norm([-0.025, 0.0, 1.0])   # del bloque hacia la unión con el mango
+ARM_STRETCH = (0.040, 0.072)  # tramo recto que se alarga (el bloque llega a 40 mm; la unión con el mango empieza en 74)
+GUIDE_PIECES = ("Conjunto_de_guias_Blade_Nail_Combination_Sleeve", "Blade_Nail_Combination_Sleeve_Tubo_malla",
                 "Drill_Sleeve_3_2mm", "Blade_Nail_Combination_Sleeve_Roscado_tuerca", "Indicador_distancia_10_15mm",
                 "Perforador_quirurgico", "Trocar_3_2mm")
 
@@ -711,8 +726,10 @@ def guias_bloqueo(g):
     d = PIN12_DIR / np.linalg.norm(PIN12_DIR)
     new_dir = GUIDE_ROT @ d
     # Avance extra del pin para que su punta quede a TIP_FROM_EDGE del borde de la cabeza.
-    tip = NAIL_HOLE + GUIDE_ROT @ (PIN12_TIP - NAIL_HOLE)
+    tip = NAIL_HOLE + GUIDE_ROT @ (PIN12_TIP - NAIL_HOLE) + GUIDE_SHIFT
     extra = (HEAD_RADIUS - TIP_FROM_EDGE) - (tip - HEAD_CENTER) @ new_dir
+    off = tip - HEAD_CENTER
+    print(f"   pin a {np.linalg.norm(off - (off @ new_dir) * new_dir) * 1000:.1f} mm del centro de la cabeza")
     done = set()
     for k, node in enumerate(nodes):
         if node["name"] not in GUIDE_PIECES:
@@ -730,7 +747,7 @@ def guias_bloqueo(g):
             assert not any(g.doc["nodes"][ch["target"]["node"]] is nodes[i] for ch in clip["channels"]), nodes[i]["name"]
         Rp, tp = Mp[:3, :3], Mp[:3, 3]
         Rl = Rp.T @ GUIDE_ROT @ Rp               # el mismo giro, en las coordenadas del padre
-        cl = Rp.T @ (GUIDE_ROT @ (tp - NAIL_HOLE) + NAIL_HOLE - tp)
+        cl = Rp.T @ (GUIDE_ROT @ (tp - NAIL_HOLE) + NAIL_HOLE + GUIDE_SHIFT - tp)
         ql = matrix_quat(Rl)
         move = lambda T: T @ Rl.T + cl
         node["translation"] = move(np.array([node.get("translation", [0, 0, 0])], float))[0].tolist()
@@ -751,9 +768,65 @@ def guias_bloqueo(g):
         if ro and ro[1] not in done:
             done.add(ro[1])
             g.set_array(ro[1], quat_mul(ql, g.array(ro[1]).astype(float)).astype(np.float32))
-        print(f"   girado: {node['name']}")
-    angle = np.degrees(np.arccos(np.clip(new_dir @ d, -1, 1)))
-    print(f"   bloqueo proximal: guías giradas {angle:.1f}° en el orificio del clavo; el pin entra {extra*1000:.0f} mm más")
+        print(f"   bajado: {node['name']}")
+    brazo_alargado(g)
+    print(f"   bloqueo proximal: guías {HOLE_DROP*1000:.0f} mm más abajo a lo largo del clavo; el pin entra {extra*1000:.0f} mm más")
+
+
+def smooth(x):
+    x = np.clip(x, 0, 1)
+    return x * x * (3 - 2 * x)
+
+
+def shift_mesh(g, node_name, local_points, local_shift_fn):
+    """Mueve los puntos de la malla de un nodo. local_points(v) pasa la malla a otras coordenadas y vuelve."""
+    node = g.node(node_name)
+    done = set()
+    for prim in g.doc["meshes"][node["mesh"]]["primitives"]:
+        index = prim["attributes"]["POSITION"]
+        if index in done:
+            continue
+        done.add(index)
+        v = g.array(index).astype(float)
+        g.set_array(index, local_shift_fn(v).astype(np.float32))
+
+
+def clavo_orificio_bajo(g):
+    """Baja el orificio de la hoja HOLE_DROP: la parte gruesa proximal del clavo se alarga hacia abajo."""
+    node = next((n for n in g.doc["nodes"] if n["name"] == "Clavo_malla" and "mesh" in n), None)
+    if node is None:
+        return
+    assert np.allclose(node_matrix(node), np.eye(4), atol=1e-6), "la malla del clavo tiene transformación propia"
+    def move(v):
+        h = (v - HOLE_C) @ NAIL_AXIS_C
+        above = smooth((NAIL_TOP_FIXED - h) / (NAIL_TOP_FIXED - NAIL_RIGID))
+        below = smooth((h - NAIL_LOW_FIXED) / (-NAIL_RIGID - NAIL_LOW_FIXED))
+        w = np.where(h >= 0, above, below)
+        return v - (HOLE_DROP * w)[:, None] * NAIL_AXIS_C[None, :]
+    shift_mesh(g, "Clavo_malla", None, move)
+    print(f"   clavo: orificio de la hoja {HOLE_DROP*1000:.0f} mm más abajo (parte proximal más larga)")
+
+
+def brazo_alargado(g):
+    """Alarga el tramo recto del brazo de soporte para que el bloque de las guías baje HOLE_DROP sin girar."""
+    name = "Varilla_Refuerzo_brazo_de_soporte"
+    node = next((n for n in g.doc["nodes"] if n["name"] == name), None)
+    if node is None:
+        return
+    clip = g.doc["animations"][0]
+    T = np.array(node.get("translation", [0, 0, 0]), float)
+    tr = g.track(clip, name, "translation")
+    if tr:
+        T = g.array(tr[1])[-1].astype(float)        # unido al mango: su posición al final del montaje
+    R = quat_matrix(np.array(node.get("rotation", [0, 0, 0, 1]), float))
+    def move(v):
+        p = v @ R.T + T                              # en coordenadas del clavo
+        s = (p - ARM_BLOCK) @ ARM_UP
+        w = 1 - smooth((s - ARM_STRETCH[0]) / (ARM_STRETCH[1] - ARM_STRETCH[0]))
+        p = p - (HOLE_DROP * w)[:, None] * NAIL_AXIS_C[None, :]
+        return (p - T) @ R
+    shift_mesh(g, name, None, move)
+    print(f"   brazo de soporte: tramo recto {HOLE_DROP*1000:.0f} mm más largo; la unión con el mango no se mueve")
 
 
 # ---------- Orden del 6.2 y el 6.3: primero se aprieta la tuerca; el trocar sale al comenzar el 6.3 ----------
