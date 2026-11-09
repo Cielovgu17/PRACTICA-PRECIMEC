@@ -919,7 +919,41 @@ def read_any(g, index):
 # El medidor de profundidad marca de 70 a 120 mm (70 a 95 mm de su cara delantera, 120 a 48 mm). Con el pin de
 # 400 mm su extremo quedaba a 35 mm, fuera de la escala, aunque el pin va 110-114 mm dentro del hueso (de la
 # cortical lateral a la punta). Se alarga el tramo liso del pin PIN_EXTRA_LENGTH para que el medidor marque ~110.
-PIN_EXTRA_LENGTH = 0.022
+PIN_EXTRA_LENGTH = 0.0      # ya no hace falta: se acortaron el manguito y las piezas que se apoyan en él
+# Manguito protector más corto: el tramo liso entre la rosca (100-200 mm) y la cabeza (230-246 mm) pasa de 29 a 7 mm.
+# El casquillo para broca y el trocar se apoyan en el extremo del manguito: se acortan lo mismo en su caña, así sus
+# puntas quedan donde estaban. Con el pin real de 400 mm el medidor marca ~110.
+SLEEVE_SHORTER = 0.022
+
+
+def guias_cortas(g):
+    S = SLEEVE_SHORTER
+    def tubo(v):
+        z = v[:, 2]
+        a, b = 0.2005, 0.2295
+        nz = np.where(z < a, z, np.where(z < b, a + (z - a) * (b - a - S) / (b - a), z - S))
+        return np.c_[v[:, :2], nz]
+    def cana(v):                                       # casquillo y trocar: se acorta la caña entre 20 y 200 mm
+        z = v[:, 2]
+        a, b = 0.020, 0.200
+        nz = np.where(z < a, z, np.where(z < b, a + (z - a) * (b - a - S) / (b - a), z - S))
+        return np.c_[v[:, :2], nz]
+    names = {n["name"] for n in g.doc["nodes"]}
+    if "Blade_Nail_Combination_Sleeve_Tubo_malla" in names:
+        shift_mesh(g, "Blade_Nail_Combination_Sleeve_Tubo_malla", None, tubo)
+    for name in ("Drill_Sleeve_3_2mm", "Trocar_3_2mm"):
+        if name in names:
+            shift_mesh(g, name, None, cana)
+    # La tuerca empieza S más adentro en la rosca (antes ocupaba el tramo liso) y termina igual, apretada al brazo.
+    clip = g.doc["animations"][0]
+    tr = g.track(clip, "Blade_Nail_Combination_Sleeve_Roscado_tuerca", "translation")
+    if tr:
+        v = g.array(tr[1]).astype(float)
+        end = v[-1, 2]
+        if end < -1e-4:
+            v[:, 2] = -S + (v[:, 2] / end) * (end + S)
+            g.set_array(tr[1], v.astype(np.float32))
+    print(f"   manguito protector, casquillo y trocar {S*1000:.0f} mm más cortos")
 PIN_SMOOTH_FROM = 0.050     # el tramo liso empieza a 50 mm de la punta (la rosca y la punta no cambian)
 
 
@@ -984,7 +1018,7 @@ def trocar_sale_al_inicio(g, source_path):
 # Depth_Gauge_Medidor_Profundidad.stl, "Depth Gauge for D3.2 guide pin", en mm) deslizándose sobre el pin hasta que su
 # cara delantera (Φ21,5) se apoya en el extremo del manguito protector. La lectura es donde queda el extremo del pin
 # dentro del medidor; no se escribe ninguna cifra.
-SLEEVE_END = 0.2458        # extremo exterior del manguito protector (z del manguito, desde su punta)
+SLEEVE_END = 0.2458 - SLEEVE_SHORTER   # extremo exterior del manguito protector (z del manguito, desde su punta)
 GAUGE_BORE = (0.007, 0.104)  # tramo del canal del medidor donde puede quedar el extremo del pin
 
 
@@ -1147,9 +1181,11 @@ if __name__ == "__main__":
         if "paso11" in src:
             guias_sin_retirar_trocar(glb)
             armar_conjunto(glb)
+            guias_cortas(glb)
         if "paso12" in src:
             trocar_sale_al_inicio(glb, sys.argv[4])
             pin_mas_largo(glb)
+            guias_cortas(glb)
         guias_bloqueo(glb)
         paso43(glb)
         anatomia(glb)
