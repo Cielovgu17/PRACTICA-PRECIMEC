@@ -1175,7 +1175,8 @@ def medidor(g, stl_path):
 # (224 mm) la punta quedaba 5 mm dentro del manguito, así que se alarga 17,2 mm el cuerpo liso (aprobado): con el
 # tope en el manguito, la cabeza cortante entra en la cortical lateral justo en todo su ancho (la superficie, inclinada,
 # está entre 1,5 y 12,2 mm más allá de la punta del manguito dentro del ancho de la broca) y no sigue.
-BIT_STRETCH = 0.0172
+BIT_STRETCH = 0.0210        # 17,2 mm para llegar a la cortical + 3,8 mm para que entre un poco más (hasta z -16 mm,
+                            # junto al costado del clavo; dentro del ancho de la broca no hay clavo hasta -37,8 mm)
 BIT_STOP = 0.2188 + BIT_STRETCH     # de la punta a la cara del tope
 BIT_LENGTH = 0.350 + BIT_STRETCH
 BONE_FIRST = -0.0015                # primer contacto con el hueso (z del manguito)
@@ -1237,6 +1238,10 @@ def broca_cortical(g, stl_path):
     gpull = (tail_z - SLEEVE_END) + 0.025
     tracks.append((gauge, "translation", g0 + (ease(1.5, 5.0) * gpull)[:, None] * Rt[:, 2]
                    + (ease(5.0, 6.5) * 0.06)[:, None] * Rt[:, 0], "LINEAR"))
+    # Una vez fuera, el medidor y el casquillo para broca (que quedó a un lado en el 6.4) ya no se ven.
+    gone = np.where((t >= 6.5)[:, None], TINY, 1.0) * np.ones((len(t), 3))
+    tracks.append((gauge, "scale", gone, "STEP"))
+    tracks.append((idx["Drill_Sleeve_3_2mm"], "scale", gone, "STEP"))
     # 2) La broca entra en el portabrocas del perforador (que está a un lado) y la llave en T la aprieta.
     mesh = stl_mesh(g, stl_path, "Broca_canulada_cortical_proximal", [0.78, 0.79, 0.81, 1.0])
     def alargar(v):
