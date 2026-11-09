@@ -916,6 +916,23 @@ def read_any(g, index):
     return np.frombuffer(g.data, dtype=dtype, count=acc["count"] * n, offset=start).reshape(acc["count"], n), acc
 
 
+# El medidor de profundidad marca de 70 a 120 mm (70 a 95 mm de su cara delantera, 120 a 48 mm). Con el pin de
+# 400 mm su extremo quedaba a 35 mm, fuera de la escala, aunque el pin va 110-114 mm dentro del hueso (de la
+# cortical lateral a la punta). Se alarga el tramo liso del pin PIN_EXTRA_LENGTH para que el medidor marque ~110.
+PIN_EXTRA_LENGTH = 0.022
+PIN_SMOOTH_FROM = 0.050     # el tramo liso empieza a 50 mm de la punta (la rosca y la punta no cambian)
+
+
+def pin_mas_largo(g):
+    node = next(n for n in g.doc["nodes"] if n["name"] == "Pin_guia_roscado_malla")
+    def move(v):
+        z = v[:, 2]
+        stretch = np.clip((z - PIN_SMOOTH_FROM) / (0.400 - PIN_SMOOTH_FROM), 0, 1) * PIN_EXTRA_LENGTH
+        return v + stretch[:, None] * np.array([0, 0, 1.0])
+    shift_mesh(g, "Pin_guia_roscado_malla", None, move)
+    print(f"   pin guía roscado: {400 + PIN_EXTRA_LENGTH*1000:.0f} mm (tramo liso más largo)")
+
+
 def trocar_sale_al_inicio(g, source_path):
     """Copia el trocar del paso11 al paso12 y lo saca durante los primeros TROCAR_LEAD segundos."""
     src = Glb(source_path)
@@ -1038,12 +1055,15 @@ def medidor(g, stl_path):
     Mt = node_matrix(nodes[tubo])                       # el manguito en coordenadas del clavo
     Rt, Tt = Mt[:3, :3], Mt[:3, 3]
     out_world = Mc[:3, :3] @ Rt[:, 2]                   # hacia afuera, en el mundo
-    tail = Mpin[:3, 3] + 0.400 * (Mpin[:3, :3] @ [0, 0, 1])     # extremo trasero del pin (la malla va de z 0 a 0,4)
+    pin_mesh = g.doc["meshes"][next(n for n in nodes if n["name"] == "Pin_guia_roscado_malla")["mesh"]]
+    length = max(g.doc["accessors"][p["attributes"]["POSITION"]]["max"][2] for p in pin_mesh["primitives"])
+    tail = Mpin[:3, 3] + length * (Mpin[:3, :3] @ [0, 0, 1])   # extremo trasero del pin (la malla empieza en z 0)
     tail_z = (np.linalg.inv(Mc @ Mt) @ np.r_[tail, 1])[2]
     tip_z = (np.linalg.inv(Mc @ Mt) @ np.r_[Mpin[:3, 3], 1])[2]
     reading = tail_z - SLEEVE_END
+    scale = 70 + (0.0954 - reading) * 50 / 0.0473      # marcas del medidor: 70 a 95,4 mm, 120 a 48,1 mm
     print(f"6.4: el pin sobresale {reading*1000:.1f} mm del manguito (canal del medidor {GAUGE_BORE[0]*1000:.0f}-"
-          f"{GAUGE_BORE[1]*1000:.0f} mm); punta del pin a {(SLEEVE_END - tip_z)*1000:.1f} mm del extremo del manguito")
+          f"{GAUGE_BORE[1]*1000:.0f} mm); el medidor marca ~{scale:.0f}; pin de {length*1000:.0f} mm")
     assert GAUGE_BORE[0] < reading < GAUGE_BORE[1], "el extremo del pin no cae dentro del canal del medidor"
     # 4) Nueva línea de tiempo.
     # La llave en T afloja el portabrocas: es el mismo movimiento con que lo apretó en el 6.3, al revés (entra, gira
@@ -1088,7 +1108,12 @@ def medidor(g, stl_path):
     a += 7.0
     # Medidor de profundidad: aparece alineado detrás del pin y se desliza hasta apoyarse en el manguito.
     mesh = stl_mesh(g, stl_path, "Medidor_de_profundidad_D3.2", [0.80, 0.81, 0.83, 1.0])
-    nodes.append({"name": "Medidor_de_profundidad", "mesh": mesh, "rotation": nodes[tubo]["rotation"],
+    # Se gira sobre su eje para que la ventana con la escala (su lado +x) mire hacia adelante (vista anterior).
+    anterior = np.array([-0.35, -0.154, 0.924])
+    best = max(np.radians(np.arange(0, 360, 2)), key=lambda a: (Mc[:3, :3] @ Rt @ [np.cos(a), np.sin(a), 0]) @ anterior)
+    spin = np.array([0, 0, np.sin(best / 2), np.cos(best / 2)])
+    gauge_rot = quat_mul(np.array(nodes[tubo]["rotation"], float), spin[None])[0].tolist()
+    nodes.append({"name": "Medidor_de_profundidad", "mesh": mesh, "rotation": gauge_rot,
                   "translation": (Tt + Rt @ [0, 0, SLEEVE_END]).tolist(), "scale": [TINY] * 3})
     gauge = len(nodes) - 1
     nodes[conj]["children"].append(gauge)
@@ -1124,6 +1149,7 @@ if __name__ == "__main__":
             armar_conjunto(glb)
         if "paso12" in src:
             trocar_sale_al_inicio(glb, sys.argv[4])
+            pin_mas_largo(glb)
         guias_bloqueo(glb)
         paso43(glb)
         anatomia(glb)
