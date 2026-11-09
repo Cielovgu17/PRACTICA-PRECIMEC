@@ -28,6 +28,8 @@ ANIMATIONS = [   # (paso, archivo, título, clip)
      "Paso6_4_retiro_casquillo_y_medidor_de_profundidad"),
     (34, "paso14_broca_cortical_proximal_KTO-PFNA.glb", "Retiro del medidor y broca para la primera cortical",
      "Paso6_5_retiro_medidor_y_broca_cortical_proximal"),
+    (62, "paso15_broca_canulada_con_tope_KTO-PFNA.glb", "Cambio de broca, limitador de profundidad y perforación hasta el tope",
+     "Paso6_6_broca_canulada_con_tope_y_limitador"),
 ]
 
 PIECES = {

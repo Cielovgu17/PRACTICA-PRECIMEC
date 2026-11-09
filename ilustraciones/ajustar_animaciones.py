@@ -1325,8 +1325,150 @@ def broca_cortical(g, stl_path):
           f"perfora {depth_total*1000:.1f} mm hasta el tope ({c:.1f}-{c + 4.5:.1f} s); dura {T:.0f} s")
 
 
+# ---------- Paso 6.6: broca canulada con tope y limitador de profundidad ----------
+# Broca_Canulada.stl ("Broca canulada con tope - broca", mm): estrías cortantes 0-135 mm, caña Φ8,6, tramo con
+# muescas cada ~5 mm (265-370 mm) donde se traba el limitador, vástago al perforador (370-430 mm), canal de 3,2 mm.
+# Tope_Profundidad.stl ("Tope de profundidad", mm): anillo Φ18 (294-308 mm en las coordenadas de la broca) con botón
+# de traba; su agujero (Φ7,1) solo pasa por el vástago, así que se pone por atrás antes de montar la broca.
+# El medidor del 6.4 marcó 110 mm: el limitador se fija para que la broca llegue 110 mm más allá de la punta del
+# manguito, y se detiene cuando su cara delantera se apoya en el extremo del manguito.
+REAM_BIT_LENGTH = 0.430
+STOP_FACE_STL = 0.294              # cara delantera del limitador en el modelo
+MEASURED = 0.110                   # lectura del medidor de profundidad (paso 6.4)
+
+
+def broca_tope(g, drill_stl, stop_stl):
+    nodes = g.doc["nodes"]
+    idx = {n["name"]: k for k, n in enumerate(nodes)}
+    old = freeze_final(g)
+    clip = g.doc["animations"][0]
+    tubo, conj = idx["Blade_Nail_Combination_Sleeve_Tubo_malla"], idx["Clavo_cefalomedular_conjunto"]
+    Mc = world_matrix(g, conj)
+    Mt = node_matrix(nodes[tubo])
+    Rt, Tt = Mt[:3, :3], Mt[:3, 3]
+    to_sleeve = np.linalg.inv(Mc @ Mt)
+    pin = idx["Pin_guia_roscado_3.2x400"]
+    Mpin = world_matrix(g, pin)
+    tail_z = (to_sleeve @ np.r_[Mpin[:3, 3] + 0.400 * (Mpin[:3, :3] @ [0, 0, 1]), 1])[2]
+    Mi = world_matrix(g, idx["Instrumental"])
+    out_p = Mi[:3, :3].T @ (Mpin[:3, :3] @ [0, 0, 1])
+    side_p = Mi[:3, :3].T @ (Mc[:3, :3] @ Rt[:, 0])
+    perf, chuck = idx["Perforador_quirurgico"], idx["Portabrocas_giratorio"]
+    first = old[("Perforador_quirurgico", "translation")][1][0]
+    p0 = first - 0.30 * out_p - 0.25 * side_p          # donde sostenía el pin en el 6.3 (ver broca_cortical)
+    old_bit = idx["Broca_canulada_cortical_proximal"]
+    Rb = quat_matrix(np.array(old[("Broca_canulada_cortical_proximal", "rotation")][1][0], float))
+    Rb = Rb @ np.diag([1, 1, 1])
+    qb0 = matrix_quat(quat_matrix(np.array(nodes[old_bit]["rotation"], float)))
+    bit_base_old = np.array(nodes[old_bit]["translation"], float)
+    zdir = quat_matrix(qb0)[:, 2]                         # eje de la broca en el portabrocas (hacia el perforador)
+    jaw = bit_base_old + BIT_LENGTH * zdir                # punto donde el portabrocas sujeta el extremo
+    k_old_end = (SLEEVE_END - BIT_STOP) + BIT_LENGTH - tail_z
+    T = 56.0
+    fps = 30
+    t = np.arange(0, T + 1e-9, 1 / fps)
+    ease = lambda a, b: smooth((t - a) / (b - a))
+    tracks = []
+    # 1) El perforador saca la broca cortical por el pin y se aparta (1,5-6,2 s).
+    k_clear_old = 0.020 + BIT_LENGTH
+    k_t = k_old_end + (k_clear_old - k_old_end) * ease(1.5, 5.0)
+    side_t = 0.25 * ease(5.0, 6.2)
+    # 2) La llave en T afloja el portabrocas; la broca cortical sale y se retira (6,5-15,5 s).
+    key_t, key_v, _ = old[("Llave_en_T_portabrocas", "scale")]
+    shown = key_t[key_v[:, 0] > 0.5]
+    k0, k1 = shown[0] - 0.05, shown[-1] + 0.05
+    dur = k1 - k0
+    L1, L2 = 6.5, 25.5                                    # aflojar / apretar
+    key = idx["Llave_en_T_portabrocas"]
+    in1 = (t >= L1) & (t <= L1 + dur)
+    in2 = (t >= L2) & (t <= L2 + dur)
+    src = np.where(in1, k1 - (t - L1), np.where(in2, k0 + (t - L2), k0))
+    for path in ("translation", "rotation", "scale"):
+        vals = sample(old[("Llave_en_T_portabrocas", path)], src)
+        if path == "scale":
+            vals = np.where((in1 | in2)[:, None], vals, TINY)
+        tracks.append((key, path, vals, "STEP" if path == "scale" else "LINEAR"))
+    a = L1 + dur + 0.3
+    tracks.append((old_bit, "translation", bit_base_old - (ease(a, a + 1.5) * 0.07 + ease(a + 1.5, a + 2.5) * 0.25)[:, None] * zdir, "LINEAR"))
+    tracks.append((old_bit, "rotation", np.repeat(qb0[None], len(t), 0), "LINEAR"))
+    tracks.append((old_bit, "scale", np.where((t >= a + 2.5)[:, None], TINY, 1.0) * np.ones((len(t), 3)), "STEP"))
+    # 3) La broca con tope: se le pone el limitador por atrás en la medida y entra en el portabrocas; la llave aprieta.
+    drill_mesh = stl_mesh(g, drill_stl, "Broca_canulada_con_tope", [0.80, 0.81, 0.83, 1.0])
+    stop_mesh = stl_mesh(g, stop_stl, "Limitador_de_profundidad", [0.85, 0.62, 0.36, 1.0])
+    base = jaw - REAM_BIT_LENGTH * zdir
+    nodes.append({"name": "Broca_canulada_con_tope", "mesh": drill_mesh, "translation": base.tolist(),
+                  "rotation": qb0.tolist(), "scale": [TINY] * 3, "children": []})
+    drill = len(nodes) - 1
+    nodes[chuck]["children"].append(drill)
+    stop_final = (SLEEVE_END + MEASURED) - STOP_FACE_STL          # se corre a lo largo de la broca (en m)
+    stop_start = REAM_BIT_LENGTH + 0.030 - STOP_FACE_STL
+    nodes.append({"name": "Limitador_de_profundidad", "mesh": stop_mesh, "translation": [0, 0, stop_start], "scale": [TINY] * 3})
+    stop = len(nodes) - 1
+    nodes[drill]["children"].append(stop)
+    b = a + 3.0
+    tracks.append((drill, "scale", np.where((t >= b)[:, None], 1.0, TINY) * np.ones((len(t), 3)), "STEP"))
+    tracks.append((stop, "scale", np.where((t >= b + 0.8)[:, None], 1.0, TINY) * np.ones((len(t), 3)), "STEP"))
+    zs = stop_start + (stop_final - stop_start) * ease(b + 1.5, b + 5.5)
+    tracks.append((stop, "translation", np.c_[np.zeros(len(t)), np.zeros(len(t)), zs], "LINEAR"))
+    mount = b + 6.0
+    tracks.append((drill, "translation", base - ((1 - ease(mount, mount + 2.0)) * 0.08)[:, None] * zdir, "LINEAR"))
+    assert mount + 2.2 <= L2, "la llave debe apretar después de montar la broca"
+    # 4) El perforador vuelve detrás del pin, se alinea y la broca avanza sobre el pin; perfora girando hasta que el
+    #    limitador se apoya en el extremo del manguito.
+    c = L2 + dur + 0.5
+    k_clear = 0.020 + REAM_BIT_LENGTH
+    k_enter = 0.0 + REAM_BIT_LENGTH - tail_z                     # punta en la punta del manguito
+    k_end = (SLEEVE_END - (SLEEVE_END + MEASURED - 0.0)) + REAM_BIT_LENGTH - tail_z   # punta a -MEASURED
+    k_t = np.where(t >= c, k_clear_old + (k_clear - k_clear_old) * ease(c, c + 2.0), k_t)
+    side_t = np.where(t >= c, 0.25 * (1 - ease(c + 2.0, c + 4.0)), side_t)
+    d = c + 4.5
+    k_t = np.where(t >= d, k_clear + (k_enter - k_clear) * ease(d, d + 4.0), k_t)
+    e = d + 4.5
+    drill_time = 9.0
+    k_t = np.where(t >= e, k_enter + (k_end - k_enter) * smooth((t - e) / drill_time), k_t)
+    tracks.append((perf, "translation", p0 + k_t[:, None] * out_p + side_t[:, None] * side_p, "LINEAR"))
+    turns = np.clip((t - (e - 0.5)) / (drill_time + 0.5), 0, 1) * 2 * np.pi * 20
+    tracks.append((drill, "rotation", np.array([quat_mul(qb0, np.array([[0, 0, np.sin(x / 2), np.cos(x / 2)]]))[0]
+                                                for x in turns]), "LINEAR"))
+    # Trayecto perforado: se marca detrás de la punta, desde la cortical ya preparada hasta la profundidad del tope.
+    start_z = SLEEVE_END - BIT_STOP                        # donde quedó la broca cortical
+    depth = start_z + MEASURED
+    tip_z = tail_z + k_t - REAM_BIT_LENGTH
+    cut = np.clip((start_z - tip_z) / depth, 0, 1)
+    base_mat = next(m for m in g.doc["materials"] if m["name"] == "Hueso_esponjoso_abertura_cortical")
+    ang = np.linspace(0, 2 * np.pi, 41)
+    ring = np.stack([np.cos(ang), np.sin(ang), np.zeros_like(ang)], 1) * 0.0043
+    posc = np.concatenate([ring, ring + [0, 0, -depth]]).astype("<f4")
+    nor = (np.concatenate([ring, ring]) / 0.0043).astype("<f4")
+    ids = np.array([v for i in range(40) for v in (i, i + 1, 41 + i, i + 1, 42 + i, 41 + i)], "<u2")
+    prim = {"attributes": {"POSITION": g.append_raw(posc, 5126, "VEC3", 34962), "NORMAL": g.append_raw(nor, 5126, "VEC3", 34962)},
+            "indices": g.append_raw(ids, 5123, "SCALAR", 34963), "material": g.doc["materials"].index(base_mat)}
+    g.doc["meshes"].append({"name": "Trayecto_de_la_hoja_perforado", "primitives": [prim]})
+    nodes.append({"name": "Trayecto_de_la_hoja_perforado", "mesh": len(g.doc["meshes"]) - 1,
+                  "translation": (Tt + Rt @ [0, 0, start_z]).tolist(), "rotation": nodes[tubo]["rotation"], "scale": [TINY] * 3})
+    hole = len(nodes) - 1
+    nodes[conj]["children"].append(hole)
+    tracks.append((hole, "scale", np.where((cut > 0.01)[:, None], np.c_[np.ones(len(t)), np.ones(len(t)), np.maximum(cut, TINY)], TINY), "LINEAR"))
+    new_input = g.append(t[:, None], "SCALAR")
+    clip["channels"], clip["samplers"] = [], []
+    for node, path, values, interp in tracks:
+        clip["samplers"].append({"input": new_input, "output": g.append(values, "VEC4" if path == "rotation" else "VEC3"),
+                                 "interpolation": interp})
+        clip["channels"].append({"sampler": len(clip["samplers"]) - 1, "target": {"node": node, "path": path}})
+    clip["name"] = "Paso6_6_broca_canulada_con_tope_y_limitador"
+    pin_tip_z = tail_z - 0.400
+    print(f"6.6: broca cortical fuera {a:.1f}-{a + 2.5:.1f} s; limitador {b + 1.5:.1f}-{b + 5.5:.1f} s (a {stop_final*1000 + 294:.1f} mm "
+          f"de la punta de la broca); llave {L2:.1f}-{L2 + dur:.1f} s; perfora {e:.1f}-{e + drill_time:.1f} s hasta "
+          f"{MEASURED*1000:.0f} mm más allá del manguito (punta del pin a {-pin_tip_z*1000:.1f} mm); dura {T:.0f} s")
+
+
 if __name__ == "__main__":
     action, src, dst = sys.argv[1:4]
+    if action == "broca_tope":               # paso 6.6, a partir del 6.5 ya ajustado (tmp-a14)
+        glb = Glb(src)
+        broca_tope(glb, sys.argv[4], sys.argv[5])
+        glb.save(dst)
+        sys.exit()
     if action == "broca_cortical":           # paso 6.5, a partir del 6.4 ya ajustado (tmp-a13)
         glb = Glb(src)
         broca_cortical(glb, sys.argv[4])
