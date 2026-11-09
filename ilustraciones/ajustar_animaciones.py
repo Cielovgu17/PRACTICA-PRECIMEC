@@ -675,8 +675,98 @@ def paso43(g):
     print("4.3: hueso ubicado y canal escariado marcado")
 
 
+# ---------- Bloqueo proximal (pasos 6.1, 6.2 y 6.4): brazo de soporte, guías y pin guía hacia la cabeza ----------
+# Como venían de Blender, el pin guía roscado cruzaba el orificio del clavo (NAIL_HOLE) pero pasaba 16 mm por encima
+# del centro de la cabeza del fémur. Se gira todo el conjunto de guías (brazo, perilla, manguitos, casquillo, tuerca,
+# perforador y pin) alrededor del orificio del clavo para que el pin vaya por el centro del cuello y de la cabeza,
+# como en la técnica de Kang-Li. El pin sigue pasando por el orificio (holgura ~2 mm). El clavo y el mango no se
+# mueven, así que el brazo queda separado del mango (~36 mm): se eligió el giro que lo deja lo más cerca posible.
+# Medido en las coordenadas del instrumental (el hueso ya ubicado con anatomia()).
+NAIL_HOLE = np.array([-0.0040, 0.1658, -0.0026])         # donde el pin cruza el eje del clavo
+HEAD_CENTER = np.array([0.0454, 0.1953, 0.0373])         # centro de la cabeza (esfera ajustada, radio 26,9 mm)
+HEAD_RADIUS = 0.0269
+PIN12_DIR = np.array([0.5783, 0.6653, 0.4721])           # dirección original del pin (hacia la cabeza)
+PIN12_TIP = np.array([0.0371, 0.2130, 0.0309])           # punta original del pin al final del paso 12
+GUIDE_ROT = np.array([[0.975867, 0.218232, -0.00769],    # giro mínimo de PIN12_DIR al centro, con el giro propio
+                      [-0.215598, 0.957301, -0.192592],  # (alrededor del pin) que acerca más el brazo al mango
+                      [-0.034668, 0.189602, 0.981249]])
+TIP_FROM_EDGE = 0.0125                                    # la punta queda a 10-15 mm del borde de la cabeza
+GUIDE_PIECES = ("Varilla_Refuerzo_brazo_de_soporte", "Pieza_Roscada_perilla_M8",
+                "Conjunto_de_guias_Blade_Nail_Combination_Sleeve", "Blade_Nail_Combination_Sleeve_Tubo_malla",
+                "Drill_Sleeve_3_2mm", "Blade_Nail_Combination_Sleeve_Roscado_tuerca", "Indicador_distancia_10_15mm",
+                "Perforador_quirurgico")
+
+
+def node_matrix(node):
+    M = np.eye(4)
+    M[:3, :3] = quat_matrix(np.array(node.get("rotation", [0, 0, 0, 1]), float)) @ np.diag(node.get("scale", [1, 1, 1]))
+    M[:3, 3] = node.get("translation", [0, 0, 0])
+    return M
+
+
+def guias_bloqueo(g):
+    nodes = g.doc["nodes"]
+    parent = {c: i for i, n in enumerate(nodes) for c in n.get("children", [])}
+    clip = g.doc["animations"][0]
+    d = PIN12_DIR / np.linalg.norm(PIN12_DIR)
+    new_dir = GUIDE_ROT @ d
+    # Avance extra del pin para que su punta quede a TIP_FROM_EDGE del borde de la cabeza.
+    tip = NAIL_HOLE + GUIDE_ROT @ (PIN12_TIP - NAIL_HOLE)
+    extra = (HEAD_RADIUS - TIP_FROM_EDGE) - (tip - HEAD_CENTER) @ new_dir
+    done = set()
+    for k, node in enumerate(nodes):
+        if node["name"] not in GUIDE_PIECES:
+            continue
+        i, up = k, []
+        while i in parent:
+            i = parent[i]
+            up.append(nodes[i]["name"])
+        if any(name in GUIDE_PIECES for name in up):   # ya gira con la pieza que lo contiene
+            continue
+        i, Mp = k, np.eye(4)
+        while i in parent:                       # padres fijos (Instrumental, Clavo_cefalomedular_conjunto)
+            i = parent[i]
+            Mp = node_matrix(nodes[i]) @ Mp
+            assert not any(g.doc["nodes"][ch["target"]["node"]] is nodes[i] for ch in clip["channels"]), nodes[i]["name"]
+        Rp, tp = Mp[:3, :3], Mp[:3, 3]
+        Rl = Rp.T @ GUIDE_ROT @ Rp               # el mismo giro, en las coordenadas del padre
+        cl = Rp.T @ (GUIDE_ROT @ (tp - NAIL_HOLE) + NAIL_HOLE - tp)
+        ql = matrix_quat(Rl)
+        move = lambda T: T @ Rl.T + cl
+        node["translation"] = move(np.array([node.get("translation", [0, 0, 0])], float))[0].tolist()
+        node["rotation"] = quat_mul(ql, np.array([node.get("rotation", [0, 0, 0, 1])], float))[0].tolist()
+        tr = g.track(clip, node["name"], "translation")
+        if tr and tr[1] not in done:
+            done.add(tr[1])
+            values = move(g.array(tr[1]).astype(float))
+            if node["name"] in ("Perforador_quirurgico", "Indicador_distancia_10_15mm"):
+                # el pin entra los milímetros que faltan durante sus últimos 60 mm de avance
+                s = values @ (Rp.T @ new_dir)
+                progress = np.clip(1 - (s[-1] - s) / 0.060, 0, 1) if node["name"] == "Perforador_quirurgico" else 1
+                values = values + (extra * np.atleast_1d(progress))[:, None] * (Rp.T @ new_dir)[None, :]
+            g.set_array(tr[1], values.astype(np.float32))
+        elif node["name"] == "Indicador_distancia_10_15mm":
+            node["translation"] = (np.array(node["translation"]) + extra * (Rp.T @ new_dir)).tolist()
+        ro = g.track(clip, node["name"], "rotation")
+        if ro and ro[1] not in done:
+            done.add(ro[1])
+            g.set_array(ro[1], quat_mul(ql, g.array(ro[1]).astype(float)).astype(np.float32))
+        print(f"   girado: {node['name']}")
+    angle = np.degrees(np.arccos(np.clip(new_dir @ d, -1, 1)))
+    print(f"   bloqueo proximal: guías giradas {angle:.1f}° en el orificio del clavo; el pin entra {extra*1000:.0f} mm más")
+
+
 if __name__ == "__main__":
     action, src, dst = sys.argv[1:4]
+    if action == "bloqueo":                  # pasos 6.1, 6.2 y 6.4: hueso como en 4.3 y guías hacia la cabeza
+        glb = Glb(src)
+        guias_bloqueo(glb)
+        paso43(glb)
+        anatomia(glb)
+        sin_sobrantes(glb)
+        perforaciones_translucidas(glb)
+        glb.save(dst)
+        sys.exit()
     glb = Glb(src)
     if action == "paso31":
         guia31(glb)
