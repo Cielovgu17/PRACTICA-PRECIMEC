@@ -796,6 +796,43 @@ def guias_sin_retirar_trocar(g):
     print(f"6.2: el trocar se queda; se aprieta la tuerca sin pausa; dura {new_t[-1]:.1f} s")
 
 
+# Al comenzar el 6.2 se arma el conjunto de guías en línea: el manguito protector (por fuera), el casquillo para
+# broca (en el medio) y el trocar (por dentro). Medidas a lo largo del eje (z = 0 en la punta, +z hacia afuera):
+# manguito 0-246 mm, casquillo 22-252 mm, trocar -1-260 mm. Separados 15 mm entre sí y alineados.
+ASSEMBLY_LEAD = 9.0        # s que se agregan al comienzo
+SLEEVE_OFFSET = 0.240      # el casquillo empieza 240 mm hacia afuera (su punta queda 16 mm detrás del manguito)
+TROCAR_OFFSET = 0.505      # el trocar empieza 505 mm hacia afuera (15 mm detrás del casquillo)
+
+
+def armar_conjunto(g):
+    clip = g.doc["animations"][0]
+    t = g.array(clip["samplers"][0]["input"])[:, 0].astype(float)
+    fps = 1 / np.median(np.diff(t))
+    appear = 3.0                                  # el conjunto aparecía a los 3 s, ya armado
+    new_t = np.arange(0, t[-1] - appear + ASSEMBLY_LEAD + 1e-9, 1 / fps)
+    resample(g, clip, new_t, np.maximum(new_t - ASSEMBLY_LEAD + appear, appear))
+    _, out = g.track(clip, "Conjunto_de_guias_Blade_Nail_Combination_Sleeve", "scale")
+    g.set_array(out, np.where((new_t >= 0.3)[:, None], 1.0, TINY).astype(np.float32) * np.ones((len(new_t), 3), np.float32))
+    def slide(t0, t1, offset):
+        f = np.clip((new_t - t0) / (t1 - t0), 0, 1)
+        return (1 - f * f * (3 - 2 * f)) * offset
+    node_index = {n["name"]: k for k, n in enumerate(g.doc["nodes"])}
+    new_input = clip["samplers"][0]["input"]
+    for name, (t0, t1, offset) in (("Drill_Sleeve_3_2mm", (1.5, 4.5, SLEEVE_OFFSET)),
+                                    ("Trocar_3_2mm", (5.0, 8.0, TROCAR_OFFSET))):
+        base = np.array(g.node(name).get("translation", [0, 0, 0]), float)
+        values = base + slide(t0, t1, offset)[:, None] * np.array([0, 0, 1.0])
+        found = g.track(clip, name, "translation")
+        if found:
+            clip["samplers"][next(ch["sampler"] for ch in clip["channels"] if ch["target"]["node"] == node_index[name]
+                                  and ch["target"]["path"] == "translation")]["output"] = g.append(values, "VEC3")
+        else:
+            clip["samplers"].append({"input": new_input, "output": g.append(values, "VEC3"), "interpolation": "LINEAR"})
+            clip["channels"].append({"sampler": len(clip["samplers"]) - 1,
+                                     "target": {"node": node_index[name], "path": "translation"}})
+    print(f"6.2: se arma el conjunto en línea (casquillo 1,5-4,5 s; trocar 5-8 s); dura {new_t[-1]:.1f} s")
+
+
 def read_any(g, index):
     acc = g.doc["accessors"][index]
     view = g.doc["bufferViews"][acc["bufferView"]]
@@ -857,6 +894,7 @@ if __name__ == "__main__":
         glb = Glb(src)
         if "paso11" in src:
             guias_sin_retirar_trocar(glb)
+            armar_conjunto(glb)
         if "paso12" in src:
             trocar_sale_al_inicio(glb, sys.argv[4])
         guias_bloqueo(glb)
