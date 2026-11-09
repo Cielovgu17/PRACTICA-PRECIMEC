@@ -938,6 +938,12 @@ def medidor(g, stl_path):
     t_end = max(g.array(s["input"])[-1, 0] for s in clip["samplers"])
     # 1) Todo queda como al final del 6.3 (cada pieza con su valor final, fijo).
     final = {}
+    key_tracks = {}                                     # la llave en T del portabrocas, como se usó en el 6.3
+    for ch in clip["channels"]:
+        if nodes[ch["target"]["node"]]["name"] == "Llave_en_T_portabrocas":
+            sm = clip["samplers"][ch["sampler"]]
+            key_tracks[ch["target"]["path"]] = (g.array(sm["input"])[:, 0].astype(float), g.array(sm["output"]).astype(float),
+                                               sm.get("interpolation", "LINEAR"))
     for ch in clip["channels"]:
         sm = clip["samplers"][ch["sampler"]]
         final[(ch["target"]["node"], ch["target"]["path"])] = g.array(sm["output"])[-1].astype(float)
@@ -967,30 +973,46 @@ def medidor(g, stl_path):
           f"{GAUGE_BORE[1]*1000:.0f} mm); punta del pin a {(SLEEVE_END - tip_z)*1000:.1f} mm del extremo del manguito")
     assert GAUGE_BORE[0] < reading < GAUGE_BORE[1], "el extremo del pin no cae dentro del canal del medidor"
     # 4) Nueva línea de tiempo.
-    T = 27.0
+    # La llave en T afloja el portabrocas: es el mismo movimiento con que lo apretó en el 6.3, al revés (entra, gira
+    # en sentido contrario y sale).
+    scale_t, scale_v, _ = key_tracks["scale"]
+    shown = scale_t[scale_v[:, 0] > 0.5]
+    k0, k1 = shown[0] - 0.05, shown[-1] + 0.05
+    KEY_FROM = 1.0
+    loosen_end = KEY_FROM + (k1 - k0)
+    T = loosen_end + 25.0
     fps = 30
     new_t = np.arange(0, T + 1e-9, 1 / fps)
     ease = lambda a, b: (lambda f: f * f * (3 - 2 * f))(np.clip((new_t - a) / (b - a), 0, 1))
     tracks = []                                          # (nodo, ruta, valores, interpolación)
-    # Perforador: suelta el pin (el portabrocas gira hacia atrás) y sale por detrás del pin, luego a un lado.
+    key = idx["Llave_en_T_portabrocas"]
+    source = k1 - (new_t - KEY_FROM)
+    inside = (new_t >= KEY_FROM) & (new_t <= loosen_end)
+    for path, (kt, kv, interp) in key_tracks.items():
+        if interp == "STEP":
+            vals = kv[np.clip(np.searchsorted(kt, source, "right") - 1, 0, len(kt) - 1)]
+        else:
+            vals = np.stack([np.interp(source, kt, kv[:, c]) for c in range(kv.shape[1])], axis=1)
+        if path == "scale":
+            vals = np.where(inside[:, None], vals, TINY)
+        tracks.append((key, path, vals, interp))
+    # Perforador: con el portabrocas flojo, sale por detrás del pin y luego se aparta.
+    a = loosen_end + 0.5
     perf = idx["Perforador_quirurgico"]
     p0 = np.array(nodes[perf]["translation"], float)
     Mp_parent = world_matrix(g, idx["Instrumental"])
     out_p = Mp_parent[:3, :3].T @ out_world
     side_p = Mp_parent[:3, :3].T @ (Mc[:3, :3] @ Rt[:, 0])
-    tracks.append((perf, "translation", p0 + (ease(1.8, 4.3) * 0.30)[:, None] * out_p
-                   + (ease(4.3, 5.5) * 0.25)[:, None] * side_p, "LINEAR"))
-    chuck = idx["Portabrocas_giratorio"]
-    q0 = np.array(nodes[chuck]["rotation"], float)
-    spin = np.radians(-120) * ease(1.0, 1.8)
-    tracks.append((chuck, "rotation", np.array([quat_mul(np.array([np.sin(a / 2), 0, 0, np.cos(a / 2)]), q0[None])[0]
-                                                for a in spin]), "LINEAR"))
+    tracks.append((perf, "translation", p0 + (ease(a, a + 2.5) * 0.30)[:, None] * out_p
+                   + (ease(a + 2.5, a + 3.7) * 0.25)[:, None] * side_p, "LINEAR"))
     # Casquillo para broca: sale por el eje del manguito hasta pasar el extremo del pin y se deja a un lado.
+    a += 4.5
     cas = idx["Drill_Sleeve_3_2mm"]
     c0 = np.array(nodes[cas]["translation"], float)
     pull = tail_z - 0.0223 + 0.040                      # su punta (z 22 mm) queda 40 mm más allá del pin
-    tracks.append((cas, "translation", c0 + (ease(6.5, 11.5) * pull)[:, None] * Rt[:, 2]
-                   + (ease(11.5, 13.0) * 0.12)[:, None] * Rt[:, 0], "LINEAR"))
+    tracks.append((cas, "translation", c0 + (ease(a, a + 5.0) * pull)[:, None] * Rt[:, 2]
+                   + (ease(a + 5.0, a + 6.5) * 0.12)[:, None] * Rt[:, 0], "LINEAR"))
+    a += 7.0
     # Medidor de profundidad: aparece alineado detrás del pin y se desliza hasta apoyarse en el manguito.
     mesh = stl_mesh(g, stl_path, "Medidor_de_profundidad_D3.2", [0.80, 0.81, 0.83, 1.0])
     nodes.append({"name": "Medidor_de_profundidad", "mesh": mesh, "rotation": nodes[tubo]["rotation"],
@@ -998,9 +1020,9 @@ def medidor(g, stl_path):
     gauge = len(nodes) - 1
     nodes[conj]["children"].append(gauge)
     start = reading + 0.035                              # su cara delantera empieza 35 mm más allá del pin
-    z = SLEEVE_END + start * (1 - ease(15.5, 21.0))
+    z = SLEEVE_END + start * (1 - ease(a + 2.0, a + 7.5))
     tracks.append((gauge, "translation", Tt[None, :] + z[:, None] * Rt[:, 2][None, :], "LINEAR"))
-    tracks.append((gauge, "scale", np.where((new_t >= 13.5)[:, None], 1.0, TINY) * np.ones((len(new_t), 3)), "STEP"))
+    tracks.append((gauge, "scale", np.where((new_t >= a)[:, None], 1.0, TINY) * np.ones((len(new_t), 3)), "STEP"))
     # Se reemplaza la animación: solo estas pistas (la cámara animada y lo demás quedan quietos).
     new_input = g.append(new_t[:, None], "SCALAR")
     clip["channels"], clip["samplers"] = [], []
@@ -1011,7 +1033,8 @@ def medidor(g, stl_path):
                                  "interpolation": interp})
         clip["channels"].append({"sampler": len(clip["samplers"]) - 1, "target": {"node": node, "path": path}})
     clip["name"] = "Paso6_4_retiro_casquillo_y_medidor_de_profundidad"
-    print(f"6.4: perforador fuera 1-5,5 s; casquillo fuera 6,5-13 s; medidor 13,5-21 s; dura {T:.0f} s (antes {t_end:.1f})")
+    print(f"6.4: llave en T afloja {KEY_FROM:.1f}-{loosen_end:.1f} s; medidor aparece a los {a:.1f} s y llega a los "
+          f"{a + 7.5:.1f} s; dura {T:.1f} s")
 
 
 if __name__ == "__main__":
