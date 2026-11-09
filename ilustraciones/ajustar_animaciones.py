@@ -1073,6 +1073,10 @@ def medidor(g, stl_path):
         final[(ch["target"]["node"], ch["target"]["path"])] = g.array(sm["output"])[-1].astype(float)
     for (node, path), value in final.items():
         nodes[node][path] = value.tolist()
+    # Desde el 6.4 ya no se muestran las líneas de distancia de 10-15 mm al borde de la cabeza.
+    for n in nodes:
+        if n["name"] == "Indicador_distancia_10_15mm":
+            n.pop("mesh", None)
     # 2) El pin guía queda fijo en el hueso: deja de ser hijo del perforador.
     pin = idx["Pin_guia_roscado_3.2x400"]
     Mpin = world_matrix(g, pin)
