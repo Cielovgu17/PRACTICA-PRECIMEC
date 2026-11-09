@@ -694,7 +694,7 @@ TIP_FROM_EDGE = 0.0125                                    # la punta queda a 10-
 GUIDE_PIECES = ("Varilla_Refuerzo_brazo_de_soporte", "Pieza_Roscada_perilla_M8",
                 "Conjunto_de_guias_Blade_Nail_Combination_Sleeve", "Blade_Nail_Combination_Sleeve_Tubo_malla",
                 "Drill_Sleeve_3_2mm", "Blade_Nail_Combination_Sleeve_Roscado_tuerca", "Indicador_distancia_10_15mm",
-                "Perforador_quirurgico")
+                "Perforador_quirurgico", "Trocar_3_2mm")
 
 
 def node_matrix(node):
@@ -756,10 +756,109 @@ def guias_bloqueo(g):
     print(f"   bloqueo proximal: guías giradas {angle:.1f}° en el orificio del clavo; el pin entra {extra*1000:.0f} mm más")
 
 
+# ---------- Orden del 6.2 y el 6.3: primero se aprieta la tuerca; el trocar sale al comenzar el 6.3 ----------
+# paso11 (6.2): entra el conjunto de guías (3-14 s), sale el trocar (15-21 s) y se aprieta la tuerca (22,5-32,5 s).
+# El trocar se queda puesto y se quita ese tramo. paso12 (6.3): antes de montar el pin, sale el trocar.
+TROCAR_OUT = (14.5, 22.0)          # s del paso11 que se quitan
+TROCAR_LOCAL = np.array([0.0, 0.0, -0.0009])   # trocar dentro del conjunto de guías
+TROCAR_TRAVEL = 0.79               # sale 790 mm a lo largo del manguito (como en el paso11)
+TROCAR_LEAD = 6.5                  # s que se agregan al comienzo del paso12 para sacarlo
+
+
+def resample(g, clip, new_t, source_t):
+    """Vuelve a escribir todas las pistas del clip en new_t, tomando cada valor del tiempo source_t original."""
+    new_input = g.append(new_t[:, None], "SCALAR")
+    for ch in clip["channels"]:
+        sm = clip["samplers"][ch["sampler"]]
+        times = g.array(sm["input"])[:, 0].astype(float)
+        values = g.array(sm["output"]).astype(float)
+        if sm.get("interpolation") == "STEP":
+            out = values[np.clip(np.searchsorted(times, source_t, "right") - 1, 0, len(times) - 1)]
+        else:
+            out = np.stack([np.interp(source_t, times, values[:, c]) for c in range(values.shape[1])], axis=1)
+            if ch["target"]["path"] == "rotation":
+                out /= np.linalg.norm(out, axis=1, keepdims=True)
+        sm["output"] = g.append(out, {1: "SCALAR", 3: "VEC3", 4: "VEC4"}[out.shape[1]])
+        sm["input"] = new_input
+
+
+def guias_sin_retirar_trocar(g):
+    clip = g.doc["animations"][0]
+    for path in ("translation", "scale"):
+        _, out = g.track(clip, "Trocar_3_2mm", path)
+        values = g.array(out)
+        g.set_array(out, np.repeat(values[:1], len(values), axis=0))
+    t = g.array(clip["samplers"][0]["input"])[:, 0].astype(float)
+    fps = 1 / np.median(np.diff(t))
+    a, b = TROCAR_OUT
+    new_t = np.arange(0, t[-1] - (b - a) + 1e-9, 1 / fps)
+    resample(g, clip, new_t, np.where(new_t <= a, new_t, new_t + (b - a)))
+    print(f"6.2: el trocar se queda; se aprieta la tuerca sin pausa; dura {new_t[-1]:.1f} s")
+
+
+def read_any(g, index):
+    acc = g.doc["accessors"][index]
+    view = g.doc["bufferViews"][acc["bufferView"]]
+    n = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4}[acc["type"]]
+    dtype = {5121: "<u1", 5123: "<u2", 5125: "<u4", 5126: "<f4"}[acc["componentType"]]
+    assert not view.get("byteStride")
+    start = g.bin + view.get("byteOffset", 0) + acc.get("byteOffset", 0)
+    return np.frombuffer(g.data, dtype=dtype, count=acc["count"] * n, offset=start).reshape(acc["count"], n), acc
+
+
+def trocar_sale_al_inicio(g, source_path):
+    """Copia el trocar del paso11 al paso12 y lo saca durante los primeros TROCAR_LEAD segundos."""
+    src = Glb(source_path)
+    snode = src.node("Trocar_3_2mm")
+    mesh = src.doc["meshes"][snode["mesh"]]
+    prims = []
+    for p in mesh["primitives"]:
+        new = {"attributes": {}}
+        for key, index in p["attributes"].items():
+            data, acc = read_any(src, index)
+            new["attributes"][key] = g.append_raw(data.copy(), acc["componentType"], acc["type"], 34962)
+        data, acc = read_any(src, p["indices"])
+        new["indices"] = g.append_raw(data[:, 0].copy(), acc["componentType"], "SCALAR", 34963)
+        if "material" in p:
+            g.doc["materials"].append(src.doc["materials"][p["material"]])
+            new["material"] = len(g.doc["materials"]) - 1
+        prims.append(new)
+    g.doc["meshes"].append({"name": mesh["name"], "primitives": prims})
+    # Mismo lugar que en el 6.2: dentro del manguito, que en el paso12 es hijo directo del clavo.
+    sleeve = g.node("Blade_Nail_Combination_Sleeve_Tubo_malla")
+    q = np.array(sleeve["rotation"], float)
+    R = quat_matrix(q)
+    base = np.array(sleeve["translation"], float) + R @ TROCAR_LOCAL
+    conjunto = next(i for i, n in enumerate(g.doc["nodes"]) if n["name"] == "Clavo_cefalomedular_conjunto")
+    g.doc["nodes"].append({"name": "Trocar_3_2mm", "mesh": len(g.doc["meshes"]) - 1,
+                           "translation": base.tolist(), "rotation": q.tolist()})
+    node = len(g.doc["nodes"]) - 1
+    g.doc["nodes"][conjunto]["children"].append(node)
+    # Todo lo demás empieza TROCAR_LEAD segundos después.
+    clip = g.doc["animations"][0]
+    t = g.array(clip["samplers"][0]["input"])[:, 0].astype(float)
+    fps = 1 / np.median(np.diff(t))
+    new_t = np.arange(0, t[-1] + TROCAR_LEAD + 1e-9, 1 / fps)
+    resample(g, clip, new_t, np.maximum(new_t - TROCAR_LEAD, 0))
+    f = np.clip((new_t - 0.5) / (TROCAR_LEAD - 1.0), 0, 1)
+    f = f * f * (3 - 2 * f)
+    pos = base + (f * TROCAR_TRAVEL)[:, None] * (R @ [0, 0, 1])[None, :]
+    scale = np.where((new_t >= TROCAR_LEAD - 0.5)[:, None], TINY, 1.0) * np.ones((len(new_t), 3))
+    new_input = clip["samplers"][0]["input"]
+    for path, values, interp in (("translation", pos, "LINEAR"), ("scale", scale, "STEP")):
+        clip["samplers"].append({"input": new_input, "output": g.append(values, "VEC3"), "interpolation": interp})
+        clip["channels"].append({"sampler": len(clip["samplers"]) - 1, "target": {"node": node, "path": path}})
+    print(f"6.3: sale el trocar (0,5-{TROCAR_LEAD - 0.5:.1f} s) y luego se monta el pin; dura {new_t[-1]:.1f} s")
+
+
 if __name__ == "__main__":
     action, src, dst = sys.argv[1:4]
-    if action == "bloqueo":                  # pasos 6.1, 6.2 y 6.4: hueso como en 4.3 y guías hacia la cabeza
+    if action == "bloqueo":                  # pasos 6.1, 6.2 y 6.3: hueso como en 4.3 y guías hacia la cabeza
         glb = Glb(src)
+        if "paso11" in src:
+            guias_sin_retirar_trocar(glb)
+        if "paso12" in src:
+            trocar_sale_al_inicio(glb, sys.argv[4])
         guias_bloqueo(glb)
         paso43(glb)
         anatomia(glb)
