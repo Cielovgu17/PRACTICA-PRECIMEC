@@ -1169,8 +1169,164 @@ def medidor(g, stl_path):
           f"{a + 7.5:.1f} s; dura {T:.1f} s")
 
 
+# ---------- Paso 6.5: retiro del medidor y broca canulada para la primera cortical proximal ----------
+# Broca_Canulada_Cortical_Proximal.stl (mm): punta cortante Φ9,2 (0-22 mm), cuerpo Φ10, tope Φ18,8 (219-232 mm),
+# vástago al perforador (236-350 mm) y canal de 3,2 mm para el pin. Con el tope apoyado en el manguito protector
+# (224 mm) la punta quedaba 5 mm dentro del manguito, así que se alarga 17,2 mm el cuerpo liso (aprobado): con el
+# tope en el manguito, la cabeza cortante entra en la cortical lateral justo en todo su ancho (la superficie, inclinada,
+# está entre 1,5 y 12,2 mm más allá de la punta del manguito dentro del ancho de la broca) y no sigue.
+BIT_STRETCH = 0.0172
+BIT_STOP = 0.2188 + BIT_STRETCH     # de la punta a la cara del tope
+BIT_LENGTH = 0.350 + BIT_STRETCH
+BONE_FIRST = -0.0015                # primer contacto con el hueso (z del manguito)
+
+
+def freeze_final(g):
+    """Deja cada pieza con su valor final, fijo, y devuelve las pistas originales por (nombre, ruta)."""
+    nodes = g.doc["nodes"]
+    clip = g.doc["animations"][0]
+    tracks = {}
+    for ch in clip["channels"]:
+        sm = clip["samplers"][ch["sampler"]]
+        node = nodes[ch["target"]["node"]]
+        tracks[(node["name"], ch["target"]["path"])] = (g.array(sm["input"])[:, 0].astype(float),
+                                                        g.array(sm["output"]).astype(float), sm.get("interpolation", "LINEAR"))
+    for (name, path), (_, values, _) in tracks.items():
+        g.node(name)[path] = values[-1].tolist()
+    return tracks
+
+
+def sample(track, at):
+    times, values, interp = track
+    if interp == "STEP":
+        return values[np.clip(np.searchsorted(times, at, "right") - 1, 0, len(times) - 1)]
+    out = np.stack([np.interp(at, times, values[:, c]) for c in range(values.shape[1])], axis=1)
+    return out / np.linalg.norm(out, axis=1, keepdims=True) if values.shape[1] == 4 else out
+
+
+def broca_cortical(g, stl_path):
+    nodes = g.doc["nodes"]
+    idx = {n["name"]: k for k, n in enumerate(nodes)}
+    old = freeze_final(g)
+    clip = g.doc["animations"][0]
+    # Marcos: manguito (z hacia afuera, 0 en su punta) y perforador.
+    tubo, conj = idx["Blade_Nail_Combination_Sleeve_Tubo_malla"], idx["Clavo_cefalomedular_conjunto"]
+    Mc = world_matrix(g, conj)
+    Mt = node_matrix(nodes[tubo])
+    Rt, Tt = Mt[:3, :3], Mt[:3, 3]
+    to_sleeve = np.linalg.inv(Mc @ Mt)
+    out_world = Mc[:3, :3] @ Rt[:, 2]
+    side_world = Mc[:3, :3] @ Rt[:, 0]
+    pin = idx["Pin_guia_roscado_3.2x400"]
+    Mpin = world_matrix(g, pin)
+    tail_z = (to_sleeve @ np.r_[Mpin[:3, 3] + 0.400 * (Mpin[:3, :3] @ [0, 0, 1]), 1])[2]
+    # Perforador: en el 6.4 salió de p0 (donde sostenía el pin) a p0 + 0,30 hacia afuera + 0,25 a un lado.
+    perf, chuck = idx["Perforador_quirurgico"], idx["Portabrocas_giratorio"]
+    p0 = old[("Perforador_quirurgico", "translation")][1][0]
+    nodes[perf]["translation"] = p0.tolist()
+    Wchuck0 = world_matrix(g, chuck)                      # el portabrocas con el perforador en p0
+    pin_in_chuck = np.linalg.inv(Wchuck0) @ Mpin           # donde estaba el pin dentro del portabrocas
+    T = 36.0
+    fps = 30
+    t = np.arange(0, T + 1e-9, 1 / fps)
+    ease = lambda a, b: smooth((t - a) / (b - a))
+    tracks = []
+    # 1) El medidor sale por el eje hasta pasar el extremo del pin y se aparta (1,5-6,5 s).
+    gauge = idx["Medidor_de_profundidad"]
+    g0 = np.array(nodes[gauge]["translation"], float)
+    gpull = (tail_z - SLEEVE_END) + 0.025
+    tracks.append((gauge, "translation", g0 + (ease(1.5, 5.0) * gpull)[:, None] * Rt[:, 2]
+                   + (ease(5.0, 6.5) * 0.06)[:, None] * Rt[:, 0], "LINEAR"))
+    # 2) La broca entra en el portabrocas del perforador (que está a un lado) y la llave en T la aprieta.
+    mesh = stl_mesh(g, stl_path, "Broca_canulada_cortical_proximal", [0.78, 0.79, 0.81, 1.0])
+    def alargar(v):
+        z = v[:, 2]
+        a, b = 0.044, 0.215
+        return np.c_[v[:, :2], np.where(z < a, z, np.where(z < b, a + (z - a) * (b - a + BIT_STRETCH) / (b - a), z + BIT_STRETCH))]
+    pos_acc = g.doc["meshes"][mesh]["primitives"][0]["attributes"]["POSITION"]
+    g.set_array(pos_acc, alargar(g.array(pos_acc).astype(float)).astype(np.float32))
+    Rpin = pin_in_chuck[:3, :3]
+    tail_in_chuck = pin_in_chuck[:3, 3] + 0.400 * Rpin[:, 2]
+    bit_base = tail_in_chuck - BIT_LENGTH * Rpin[:, 2]
+    nodes.append({"name": "Broca_canulada_cortical_proximal", "mesh": mesh, "translation": bit_base.tolist(),
+                  "rotation": matrix_quat(Rpin).tolist(), "scale": [TINY] * 3})
+    bit = len(nodes) - 1
+    nodes[chuck]["children"].append(bit)
+    tracks.append((bit, "translation", bit_base - ((1 - ease(7.5, 9.5)) * 0.07)[:, None] * Rpin[:, 2], "LINEAR"))
+    tracks.append((bit, "scale", np.where((t >= 7.0)[:, None], 1.0, TINY) * np.ones((len(t), 3)), "STEP"))
+    key_t, key_v, _ = old[("Llave_en_T_portabrocas", "scale")]
+    shown = key_t[key_v[:, 0] > 0.5]
+    k0, k1 = shown[0] - 0.05, shown[-1] + 0.05
+    KEY_AT = 10.0
+    src = k0 + (k1 - (t - KEY_AT)) - k0                    # el 6.4 aflojaba: al revés, aprieta
+    inside = (t >= KEY_AT) & (t <= KEY_AT + (k1 - k0))
+    key = idx["Llave_en_T_portabrocas"]
+    for path in ("translation", "rotation", "scale"):
+        vals = sample(old[("Llave_en_T_portabrocas", path)], src)
+        if path == "scale":
+            vals = np.where(inside[:, None], vals, TINY)
+        tracks.append((key, path, vals, "STEP" if path == "scale" else "LINEAR"))
+    a = KEY_AT + (k1 - k0) + 0.5
+    # 3) El conjunto vuelve detrás del pin, se alinea y se desliza sobre él hasta tocar el hueso; luego perfora
+    #    girando hasta que el tope se apoya en el manguito.
+    Mi = world_matrix(g, idx["Instrumental"])
+    pin_out = Mpin[:3, :3] @ [0, 0, 1]                              # se avanza por el eje del pin, exacto
+    out_p, side_p = Mi[:3, :3].T @ pin_out, Mi[:3, :3].T @ side_world
+    k_end = (SLEEVE_END - BIT_STOP) + BIT_LENGTH - tail_z           # tope en el extremo del manguito
+    k_touch = BONE_FIRST + BIT_LENGTH - tail_z                       # la punta toca el hueso
+    k_clear = 0.020 + BIT_LENGTH                                     # punta 20 mm más allá del extremo del pin
+    k_t = np.full(len(t), 0.30)
+    k_t = np.where(t >= a, 0.30 + (k_clear - 0.30) * ease(a, a + 2.0), k_t)
+    side_t = 0.25 * (1 - ease(a + 2.0, a + 4.0))
+    b = a + 4.5
+    k_t = np.where(t >= b, k_clear + (k_touch - k_clear) * ease(b, b + 5.0), k_t)
+    c = b + 5.5
+    k_t = np.where(t >= c, k_touch + (k_end - k_touch) * smooth((t - c) / 4.5), k_t)
+    tracks.append((perf, "translation", p0 + k_t[:, None] * out_p + side_t[:, None] * side_p, "LINEAR"))
+    # Giro de la broca (con el portabrocas) mientras perfora; se detiene al llegar al tope.
+    # La broca gira sobre su propio eje (el del pin), así no cabecea.
+    turns = np.clip((t - (c - 0.5)) / (5.5), 0, 1) * 2 * np.pi * 9
+    qb = matrix_quat(Rpin)
+    tracks.append((bit, "rotation", np.array([quat_mul(qb, np.array([[0, 0, np.sin(x / 2), np.cos(x / 2)]]))[0]
+                                              for x in turns]), "LINEAR"))
+    # Perforación de la cortical: se va marcando detrás de la punta (mismo color translúcido que las demás).
+    depth_total = BONE_FIRST - (SLEEVE_END - BIT_STOP)
+    tip_z = tail_z - BIT_LENGTH + k_t
+    cut = np.clip((BONE_FIRST - tip_z) / depth_total, 0, 1)
+    base = next(m for m in g.doc["materials"] if m["name"].startswith("Hueso_esponjoso_abertura"))
+    g.doc["materials"].append({"name": "Hueso_esponjoso_abertura_cortical", "doubleSided": True, "alphaMode": "BLEND",
+                               "pbrMetallicRoughness": dict(base["pbrMetallicRoughness"]), "emissiveFactor": [0.35, 0.17, 0.11]})
+    ang = np.linspace(0, 2 * np.pi, 41)
+    ring = np.stack([np.cos(ang), np.sin(ang), np.zeros_like(ang)], 1) * 0.0047
+    posc = np.concatenate([ring, ring + [0, 0, -depth_total]]).astype("<f4")
+    nor = np.concatenate([ring, ring]).astype("<f4") / 0.0047
+    ids = np.array([v for i in range(40) for v in (i, i + 1, 41 + i, i + 1, 42 + i, 41 + i)], "<u2")
+    prim = {"attributes": {"POSITION": g.append_raw(posc, 5126, "VEC3", 34962), "NORMAL": g.append_raw(nor, 5126, "VEC3", 34962)},
+            "indices": g.append_raw(ids, 5123, "SCALAR", 34963), "material": len(g.doc["materials"]) - 1}
+    g.doc["meshes"].append({"name": "Perforacion_cortical_proximal", "primitives": [prim]})
+    nodes.append({"name": "Perforacion_cortical_proximal", "mesh": len(g.doc["meshes"]) - 1,
+                  "translation": (Tt + Rt @ [0, 0, BONE_FIRST]).tolist(), "rotation": nodes[tubo]["rotation"], "scale": [TINY] * 3})
+    hole = len(nodes) - 1
+    nodes[conj]["children"].append(hole)
+    tracks.append((hole, "scale", np.where((cut > 0.02)[:, None], np.c_[np.ones(len(t)), np.ones(len(t)), np.maximum(cut, TINY)], TINY), "LINEAR"))
+    new_input = g.append(t[:, None], "SCALAR")
+    clip["channels"], clip["samplers"] = [], []
+    for node, path, values, interp in tracks:
+        clip["samplers"].append({"input": new_input, "output": g.append(values, "VEC4" if path == "rotation" else "VEC3"),
+                                 "interpolation": interp})
+        clip["channels"].append({"sampler": len(clip["samplers"]) - 1, "target": {"node": node, "path": path}})
+    clip["name"] = "Paso6_5_retiro_medidor_y_broca_cortical_proximal"
+    print(f"6.5: medidor fuera 1,5-6,5 s; broca montada y apretada {KEY_AT - 3:.1f}-{a:.1f} s; sobre el pin {b:.1f}-{c:.1f} s; "
+          f"perfora {depth_total*1000:.1f} mm hasta el tope ({c:.1f}-{c + 4.5:.1f} s); dura {T:.0f} s")
+
+
 if __name__ == "__main__":
     action, src, dst = sys.argv[1:4]
+    if action == "broca_cortical":           # paso 6.5, a partir del 6.4 ya ajustado (tmp-a13)
+        glb = Glb(src)
+        broca_cortical(glb, sys.argv[4])
+        glb.save(dst)
+        sys.exit()
     if action == "medidor":                  # paso 6.4, a partir del 6.3 ya ajustado (tmp-a12)
         glb = Glb(src)
         medidor(glb, sys.argv[4])

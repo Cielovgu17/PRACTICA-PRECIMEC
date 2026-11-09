@@ -26,6 +26,8 @@ ANIMATIONS = [   # (paso, archivo, título, clip)
      "Paso12_pin_guia_roscado_perforador"),
     (33, "paso13_medidor_profundidad_KTO-PFNA.glb", "Retiro del casquillo y medidor de profundidad sobre el pin",
      "Paso6_4_retiro_casquillo_y_medidor_de_profundidad"),
+    (34, "paso14_broca_cortical_proximal_KTO-PFNA.glb", "Retiro del medidor y broca para la primera cortical",
+     "Paso6_5_retiro_medidor_y_broca_cortical_proximal"),
 ]
 
 PIECES = {
@@ -46,6 +48,8 @@ PIECES = {
     "Indicador 10 15mm": "Distancia de 10 a 15 mm al borde de la cabeza",
     "Abertura canal medular": "Abertura del canal medular",
     "Medidor de profundidad D32": "Medidor de profundidad",
+    "Broca canulada cortical proximal": "Broca canulada para hueso cortical proximal",
+    "Perforacion cortical proximal": "Perforación de la primera cortical",
 }
 
 
