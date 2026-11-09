@@ -888,8 +888,139 @@ def trocar_sale_al_inicio(g, source_path):
     print(f"6.3: sale el trocar (0,5-{TROCAR_LEAD - 0.5:.1f} s) y luego se monta el pin; dura {new_t[-1]:.1f} s")
 
 
+# ---------- Paso 6.4: retiro del casquillo y medidor de profundidad sobre el pin guía ----------
+# Empieza como termina el 6.3. El perforador suelta el pin y sale por detrás (el pin queda quieto); sale el casquillo
+# para broca por el eje del manguito y se deja a un lado; entra el medidor de profundidad (modelo
+# Depth_Gauge_Medidor_Profundidad.stl, "Depth Gauge for D3.2 guide pin", en mm) deslizándose sobre el pin hasta que su
+# cara delantera (Φ21,5) se apoya en el extremo del manguito protector. La lectura es donde queda el extremo del pin
+# dentro del medidor; no se escribe ninguna cifra.
+SLEEVE_END = 0.2458        # extremo exterior del manguito protector (z del manguito, desde su punta)
+GAUGE_BORE = (0.007, 0.104)  # tramo del canal del medidor donde puede quedar el extremo del pin
+
+
+def stl_mesh(g, path, name, color):
+    raw = open(path, "rb").read()
+    n = struct.unpack_from("<I", raw, 80)[0]
+    tri = np.frombuffer(raw, dtype=np.dtype([("n", "<f4", 3), ("v", "<f4", (3, 3)), ("x", "<u2")]), count=n, offset=84)
+    v = tri["v"].reshape(-1, 3).astype(np.float64) / 1000          # mm -> m
+    keys, inverse = np.unique(np.round(v / 2e-5).astype(np.int64), axis=0, return_inverse=True)   # une puntos iguales
+    pos = np.zeros((len(keys), 3)); np.add.at(pos, inverse.ravel(), v); pos /= np.bincount(inverse.ravel())[:, None]
+    faces = inverse.reshape(-1, 3)
+    nor = np.zeros_like(pos)
+    fn = np.cross(pos[faces[:, 1]] - pos[faces[:, 0]], pos[faces[:, 2]] - pos[faces[:, 0]])
+    for k in range(3):
+        np.add.at(nor, faces[:, k], fn)
+    nor /= np.maximum(np.linalg.norm(nor, axis=1, keepdims=True), 1e-12)
+    g.doc["materials"].append({"name": name, "pbrMetallicRoughness": {"baseColorFactor": color, "metallicFactor": 0.6,
+                                                                      "roughnessFactor": 0.35}})
+    prim = {"attributes": {"POSITION": g.append_raw(pos.astype("<f4"), 5126, "VEC3", 34962),
+                           "NORMAL": g.append_raw(nor.astype("<f4"), 5126, "VEC3", 34962)},
+            "indices": g.append_raw(faces.ravel().astype("<u4"), 5125, "SCALAR", 34963),
+            "material": len(g.doc["materials"]) - 1}
+    g.doc["meshes"].append({"name": name, "primitives": [prim]})
+    print(f"   {name}: {len(pos)} puntos, {len(faces)} triángulos")
+    return len(g.doc["meshes"]) - 1
+
+
+def world_matrix(g, index, local=None):
+    parent = {c: i for i, n in enumerate(g.doc["nodes"]) for c in n.get("children", [])}
+    M = local if local is not None else node_matrix(g.doc["nodes"][index])
+    while index in parent:
+        index = parent[index]
+        M = node_matrix(g.doc["nodes"][index]) @ M
+    return M
+
+
+def medidor(g, stl_path):
+    nodes = g.doc["nodes"]
+    idx = {n["name"]: k for k, n in enumerate(nodes)}
+    clip = g.doc["animations"][0]
+    t_end = max(g.array(s["input"])[-1, 0] for s in clip["samplers"])
+    # 1) Todo queda como al final del 6.3 (cada pieza con su valor final, fijo).
+    final = {}
+    for ch in clip["channels"]:
+        sm = clip["samplers"][ch["sampler"]]
+        final[(ch["target"]["node"], ch["target"]["path"])] = g.array(sm["output"])[-1].astype(float)
+    for (node, path), value in final.items():
+        nodes[node][path] = value.tolist()
+    # 2) El pin guía queda fijo en el hueso: deja de ser hijo del perforador.
+    pin = idx["Pin_guia_roscado_3.2x400"]
+    Mpin = world_matrix(g, pin)
+    for n in nodes:
+        if pin in n.get("children", []):
+            n["children"].remove(pin)
+    nodes[idx["Instrumental"]].setdefault("children", []).append(pin)
+    R = Mpin[:3, :3]
+    nodes[pin].update(translation=Mpin[:3, 3].tolist(), rotation=matrix_quat(R).tolist(), scale=[1, 1, 1])
+    # 3) Marco del manguito protector (z hacia afuera, 0 en su punta).
+    tubo = idx["Blade_Nail_Combination_Sleeve_Tubo_malla"]
+    conj = idx["Clavo_cefalomedular_conjunto"]
+    Mc = world_matrix(g, conj)
+    Mt = node_matrix(nodes[tubo])                       # el manguito en coordenadas del clavo
+    Rt, Tt = Mt[:3, :3], Mt[:3, 3]
+    out_world = Mc[:3, :3] @ Rt[:, 2]                   # hacia afuera, en el mundo
+    tail = Mpin[:3, 3] + 0.400 * (Mpin[:3, :3] @ [0, 0, 1])     # extremo trasero del pin (la malla va de z 0 a 0,4)
+    tail_z = (np.linalg.inv(Mc @ Mt) @ np.r_[tail, 1])[2]
+    tip_z = (np.linalg.inv(Mc @ Mt) @ np.r_[Mpin[:3, 3], 1])[2]
+    reading = tail_z - SLEEVE_END
+    print(f"6.4: el pin sobresale {reading*1000:.1f} mm del manguito (canal del medidor {GAUGE_BORE[0]*1000:.0f}-"
+          f"{GAUGE_BORE[1]*1000:.0f} mm); punta del pin a {(SLEEVE_END - tip_z)*1000:.1f} mm del extremo del manguito")
+    assert GAUGE_BORE[0] < reading < GAUGE_BORE[1], "el extremo del pin no cae dentro del canal del medidor"
+    # 4) Nueva línea de tiempo.
+    T = 27.0
+    fps = 30
+    new_t = np.arange(0, T + 1e-9, 1 / fps)
+    ease = lambda a, b: (lambda f: f * f * (3 - 2 * f))(np.clip((new_t - a) / (b - a), 0, 1))
+    tracks = []                                          # (nodo, ruta, valores, interpolación)
+    # Perforador: suelta el pin (el portabrocas gira hacia atrás) y sale por detrás del pin, luego a un lado.
+    perf = idx["Perforador_quirurgico"]
+    p0 = np.array(nodes[perf]["translation"], float)
+    Mp_parent = world_matrix(g, idx["Instrumental"])
+    out_p = Mp_parent[:3, :3].T @ out_world
+    side_p = Mp_parent[:3, :3].T @ (Mc[:3, :3] @ Rt[:, 0])
+    tracks.append((perf, "translation", p0 + (ease(1.8, 4.3) * 0.30)[:, None] * out_p
+                   + (ease(4.3, 5.5) * 0.25)[:, None] * side_p, "LINEAR"))
+    chuck = idx["Portabrocas_giratorio"]
+    q0 = np.array(nodes[chuck]["rotation"], float)
+    spin = np.radians(-120) * ease(1.0, 1.8)
+    tracks.append((chuck, "rotation", np.array([quat_mul(np.array([np.sin(a / 2), 0, 0, np.cos(a / 2)]), q0[None])[0]
+                                                for a in spin]), "LINEAR"))
+    # Casquillo para broca: sale por el eje del manguito hasta pasar el extremo del pin y se deja a un lado.
+    cas = idx["Drill_Sleeve_3_2mm"]
+    c0 = np.array(nodes[cas]["translation"], float)
+    pull = tail_z - 0.0223 + 0.040                      # su punta (z 22 mm) queda 40 mm más allá del pin
+    tracks.append((cas, "translation", c0 + (ease(6.5, 11.5) * pull)[:, None] * Rt[:, 2]
+                   + (ease(11.5, 13.0) * 0.12)[:, None] * Rt[:, 0], "LINEAR"))
+    # Medidor de profundidad: aparece alineado detrás del pin y se desliza hasta apoyarse en el manguito.
+    mesh = stl_mesh(g, stl_path, "Medidor_de_profundidad_D3.2", [0.80, 0.81, 0.83, 1.0])
+    nodes.append({"name": "Medidor_de_profundidad", "mesh": mesh, "rotation": nodes[tubo]["rotation"],
+                  "translation": (Tt + Rt @ [0, 0, SLEEVE_END]).tolist(), "scale": [TINY] * 3})
+    gauge = len(nodes) - 1
+    nodes[conj]["children"].append(gauge)
+    start = reading + 0.035                              # su cara delantera empieza 35 mm más allá del pin
+    z = SLEEVE_END + start * (1 - ease(15.5, 21.0))
+    tracks.append((gauge, "translation", Tt[None, :] + z[:, None] * Rt[:, 2][None, :], "LINEAR"))
+    tracks.append((gauge, "scale", np.where((new_t >= 13.5)[:, None], 1.0, TINY) * np.ones((len(new_t), 3)), "STEP"))
+    # Se reemplaza la animación: solo estas pistas (la cámara animada y lo demás quedan quietos).
+    new_input = g.append(new_t[:, None], "SCALAR")
+    clip["channels"], clip["samplers"] = [], []
+    for node, path, values, interp in tracks:
+        if path == "rotation":
+            values = values / np.linalg.norm(values, axis=1, keepdims=True)
+        clip["samplers"].append({"input": new_input, "output": g.append(values, "VEC4" if path == "rotation" else "VEC3"),
+                                 "interpolation": interp})
+        clip["channels"].append({"sampler": len(clip["samplers"]) - 1, "target": {"node": node, "path": path}})
+    clip["name"] = "Paso6_4_retiro_casquillo_y_medidor_de_profundidad"
+    print(f"6.4: perforador fuera 1-5,5 s; casquillo fuera 6,5-13 s; medidor 13,5-21 s; dura {T:.0f} s (antes {t_end:.1f})")
+
+
 if __name__ == "__main__":
     action, src, dst = sys.argv[1:4]
+    if action == "medidor":                  # paso 6.4, a partir del 6.3 ya ajustado (tmp-a12)
+        glb = Glb(src)
+        medidor(glb, sys.argv[4])
+        glb.save(dst)
+        sys.exit()
     if action == "bloqueo":                  # pasos 6.1, 6.2 y 6.3: hueso como en 4.3 y guías hacia la cabeza
         glb = Glb(src)
         if "paso11" in src:

@@ -20,10 +20,12 @@ FILES = ROOT / "animaciones"
 ANIMATIONS = [   # (paso, archivo, título, clip)
     (29, "paso10_montaje_varilla_refuerzo_KTO-PFNA.glb", "Montaje del brazo de soporte",
      "Paso10_montaje_varilla_de_refuerzo"),
-    (30, "paso11_conjunto_guias_KTO-PFNA.glb", "Conjunto de guías de la hoja",
+    (30, "paso11_conjunto_guias_KTO-PFNA.glb", "Armado del conjunto de guías y apriete de la tuerca",
      "Paso11_conjunto_de_guias_retiro_trocar_apriete_manguito"),
-    (32, "paso12_pin_guia_roscado_KTO-PFNA - centrado en la cabeza.glb", "Pin guía roscado hacia el centro de la cabeza",
+    (32, "paso12_pin_guia_roscado_KTO-PFNA - centrado en la cabeza.glb", "Retiro del trocar y pin guía roscado hacia el centro de la cabeza",
      "Paso12_pin_guia_roscado_perforador"),
+    (33, "paso13_medidor_profundidad_KTO-PFNA.glb", "Retiro del casquillo y medidor de profundidad sobre el pin",
+     "Paso6_4_retiro_casquillo_y_medidor_de_profundidad"),
 ]
 
 PIECES = {
@@ -43,6 +45,7 @@ PIECES = {
     "Llave del portabrocas": "Llave del portabrocas",
     "Indicador 10 15mm": "Distancia de 10 a 15 mm al borde de la cabeza",
     "Abertura canal medular": "Abertura del canal medular",
+    "Medidor de profundidad D32": "Medidor de profundidad",
 }
 
 
