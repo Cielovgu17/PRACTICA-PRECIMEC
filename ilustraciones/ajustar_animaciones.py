@@ -1982,8 +1982,74 @@ def brazo_distal(g, arm_stl, knob_stl):
     print(f"7.1: brazo alargado {DISTAL_STRETCH*1000:.1f} mm; se acerca 4-9 s; perilla 10-18 s; dura {T:.0f} s")
 
 
+# ---------- Paso 7.2: conjunto de guías por el orificio inferior del clavo ----------
+# Manguito_Combinado_1/2/3 (mm, cada uno con la cabeza en z 0-10 y la punta hacia +z): manguito exterior (Φ10,4, 170 mm),
+# guía intermedia (Φ7,8, 185,5 mm) y trocar interior (Φ3,6, 198 mm, punta aguda). En Manguito_Combinado_Ensamble la
+# guía intermedia está 9,5 mm más atrás y el trocar 16,5 mm (su punta sobresale 11,5 mm del manguito).
+# El orificio inferior del clavo es el ovalado (z 21-27 mm desde la punta); el agujero del brazo que le corresponde
+# quedó a z 25 mm (era el de 63,5 mm, antes de alargar el brazo). El eje va a lo largo de x (de afuera hacia el clavo).
+GUIDE_Z = 0.025
+GUIDE_NEST = {"exterior": 0.0, "intermedia": -0.0095, "trocar": -0.0165}
+GUIDE_TROCAR_TIP = 0.198
+
+
+def guias_distales(g, ext_stl, mid_stl, troc_stl):
+    nodes = g.doc["nodes"]
+    idx = {n["name"]: k for k, n in enumerate(nodes)}
+    freeze_final(g)
+    clip = g.doc["animations"][0]
+    conj = idx["Clavo_cefalomedular_conjunto"]
+    Mc = world_matrix(g, conj)
+    # Superficie lateral del fémur sobre el eje (y = 0, z = GUIDE_Z, a lo largo de x), en coordenadas del clavo.
+    fem = idx["Femur_derecho"]
+    Mf = np.linalg.inv(Mc) @ world_matrix(g, fem)
+    fv = np.concatenate([g.array(p["attributes"]["POSITION"]).astype(float) for p in g.doc["meshes"][nodes[fem]["mesh"]]["primitives"]])
+    fv = fv @ Mf[:3, :3].T + Mf[:3, 3]
+    near = fv[np.hypot(fv[:, 1], fv[:, 2] - GUIDE_Z) < 0.0015]
+    bone_x = near[:, 0].min()
+    print(f"   cortical lateral sobre el eje: x = {bone_x*1000:.1f} mm (el clavo está en x = 0)")
+    q = [0.0, np.sin(np.pi / 4), 0.0, np.cos(np.pi / 4)]          # z de las guías -> +x del clavo (hacia el clavo)
+    meshes = {"exterior": stl_mesh(g, ext_stl, "Manguito_exterior_distal", [0.75, 0.77, 0.80, 1.0]),
+              "intermedia": stl_mesh(g, mid_stl, "Guia_intermedia_distal", [0.60, 0.62, 0.66, 1.0]),
+              "trocar": stl_mesh(g, troc_stl, "Trocar_distal", [0.85, 0.86, 0.88, 1.0])}
+    names = {"exterior": "Manguito_exterior_distal", "intermedia": "Guia_intermedia_distal", "trocar": "Trocar_distal"}
+    T = 32.0
+    fps = 30
+    t = np.arange(0, T + 1e-9, 1 / fps)
+    ease = lambda a, b: smooth((t - a) / (b - a))
+    tracks = []
+    # Posición final: la punta del trocar toca la cortical lateral; el origen del manguito exterior queda en base_x.
+    base_x = bone_x - (GUIDE_TROCAR_TIP + GUIDE_NEST["trocar"])
+    # Recorrido: el conjunto armado llega desde 0,30 m afuera, por el eje, y entra por el agujero del brazo (16-24 s).
+    travel = 0.30 * (1 - ease(16.0, 24.0))
+    # Armado en línea (2-14 s): separados por su largo + 15 mm; entra la guía intermedia y luego el trocar.
+    sep = {"exterior": 0.0,
+           "intermedia": -(0.1855 + 0.015) * (1 - ease(5.0, 9.0)),
+           "trocar": -(0.1855 + 0.198 + 0.030) * (1 - ease(10.0, 14.0))}
+    for key in ("exterior", "intermedia", "trocar"):
+        nodes.append({"name": names[key], "mesh": meshes[key], "rotation": q, "scale": [TINY] * 3})
+        k = len(nodes) - 1
+        nodes[conj]["children"].append(k)
+        x = base_x + GUIDE_NEST[key] - travel + sep[key]
+        tracks.append((k, "translation", np.c_[x, np.zeros(len(t)), np.full(len(t), GUIDE_Z)], "LINEAR"))
+        tracks.append((k, "scale", np.where((t >= 2.0)[:, None], 1.0, TINY) * np.ones((len(t), 3)), "STEP"))
+    new_input = g.append(t[:, None], "SCALAR")
+    clip["channels"], clip["samplers"] = [], []
+    for node, path, values, interp in tracks:
+        clip["samplers"].append({"input": new_input, "output": g.append(values, "VEC4" if path == "rotation" else "VEC3"),
+                                 "interpolation": interp})
+        clip["channels"].append({"sampler": len(clip["samplers"]) - 1, "target": {"node": node, "path": path}})
+    clip["name"] = "Paso7_2_guias_de_bloqueo_distal"
+    print(f"7.2: armado en línea 2-14 s; entra por el agujero del brazo 16-24 s (punta del trocar en la cortical); dura {T:.0f} s")
+
+
 if __name__ == "__main__":
     action, src, dst = sys.argv[1:4]
+    if action == "guias_distales":           # paso 7.2, a partir del 7.1 ya ajustado (tmp-a18)
+        glb = Glb(src)
+        guias_distales(glb, *sys.argv[4:7])
+        glb.save(dst)
+        sys.exit()
     if action == "brazo_distal":             # paso 7.1, a partir del 6.9 ya ajustado (tmp-a17)
         glb = Glb(src)
         brazo_distal(glb, sys.argv[4], sys.argv[5])
