@@ -1910,8 +1910,85 @@ def retiro_proximal(g, mount_glb):
           f"quedan clavo, hoja y mango; dura {T:.0f} s")
 
 
+# ---------- Paso 7.1: brazo de puntería distal ----------
+# Brazo_Punteria_Distal_PFNA_E29-6-1824-2.stl y Brazo_Punteria_Perilla_Tornillo_M8.stl vienen "montados en el mango",
+# en las coordenadas del clavo (mm). Sus agujeros de puntería (a lo largo de x) quedan a 63, 83 y 103 mm de la punta
+# del clavo, pero los orificios distales del clavo de 240 mm están a 24 mm (ovalado, 21-27) y 44,5 mm (redondo): el
+# brazo corresponde a un clavo ~40 mm más corto. Se alarga su tramo recto DISTAL_STRETCH (aprobado) para que el
+# agujero de 83 mm quede frente al orificio redondo y el de 63 mm en el centro del ovalado. La unión con el mango y la
+# perilla no cambian. La perilla (M8x1,25) se enrosca a mano, a favor de las manecillas visto desde afuera.
+DISTAL_STRETCH = 0.0385
+DISTAL_ZONE = (0.112, 0.150)       # tramo recto entre el bloque de los agujeros y la curva hacia el mango
+KNOB_TRAVEL = 0.012
+
+
+def brazo_distal(g, arm_stl, knob_stl):
+    nodes = g.doc["nodes"]
+    idx = {n["name"]: k for k, n in enumerate(nodes)}
+    freeze_final(g)
+    clip = g.doc["animations"][0]
+    # Lo que ya se retiró en el 6.9 (quedó oculto) se quita del archivo, con todo lo que cuelga de ello.
+    def drop(i):
+        nodes[i].pop("mesh", None)
+        for ch in nodes[i].get("children", []):
+            drop(ch)
+    for i, n in enumerate(nodes):
+        if max(n.get("scale", [1, 1, 1])) < 0.01:
+            drop(i)
+    conj = idx["Clavo_cefalomedular_conjunto"]
+    arm_mesh = stl_mesh(g, arm_stl, "Brazo_de_punteria_distal", [0.42, 0.44, 0.47, 1.0])
+    knob_mesh = stl_mesh(g, knob_stl, "Perilla_del_brazo_de_punteria", [0.20, 0.20, 0.22, 1.0])
+    a, b = DISTAL_ZONE
+    for p in g.doc["meshes"][arm_mesh]["primitives"]:
+        v = g.array(p["attributes"]["POSITION"]).astype(float)
+        z = v[:, 2]
+        nz = np.where(z > b, z, np.where(z > a, b - (b - z) * (b - a + DISTAL_STRETCH) / (b - a), z - DISTAL_STRETCH))
+        g.set_array(p["attributes"]["POSITION"], np.c_[v[:, :2], nz].astype(np.float32))
+    def add(name, mesh):
+        nodes.append({"name": name, "mesh": mesh, "scale": [TINY] * 3})
+        nodes[conj]["children"].append(len(nodes) - 1)
+        return len(nodes) - 1
+    arm, knob = add("Brazo_de_punteria_distal", arm_mesh), add("Perilla_del_brazo_de_punteria", knob_mesh)
+    T = 30.0
+    fps = 30
+    t = np.arange(0, T + 1e-9, 1 / fps)
+    ease = lambda a_, b_: smooth((t - a_) / (b_ - a_))
+    tracks = []
+    # El brazo aparece a un lado (como el del 6.1, 7 cm hacia afuera) y se acerca hasta asentarse en el mango.
+    off = (1 - ease(4.0, 9.0))
+    arm_pos = np.c_[-0.070 * off, np.zeros(len(t)), -0.006 * off]
+    tracks.append((arm, "translation", arm_pos, "LINEAR"))
+    tracks.append((arm, "scale", np.where((t >= 1.5)[:, None], 1.0, TINY) * np.ones((len(t), 3)), "STEP"))
+    # La perilla entra con el brazo y luego se enrosca 12 mm (9,6 vueltas de rosca M8x1,25).
+    screw = ease(10.0, 18.0)
+    k_off = KNOB_TRAVEL * (1 - screw)
+    turns = (screw - 1) * KNOB_TRAVEL / THREAD_PITCH * 2 * np.pi        # termina en 0 (posición del modelo)
+    # Gira sobre su propio eje (a lo largo de x, por el centro de la perilla), no alrededor del origen del clavo.
+    kacc = [g.doc["accessors"][p["attributes"]["POSITION"]] for p in g.doc["meshes"][knob_mesh]["primitives"]]
+    kmin, kmax = np.min([x["min"] for x in kacc], 0), np.max([x["max"] for x in kacc], 0)
+    center = np.array([0.0, (kmin[1] + kmax[1]) / 2, (kmin[2] + kmax[2]) / 2])
+    pivot = np.array([center - quat_matrix(np.array([np.sin(x / 2), 0, 0, np.cos(x / 2)])) @ center for x in turns])
+    knob_pos = arm_pos + np.c_[-k_off, np.zeros(len(t)), np.zeros(len(t))] + pivot
+    tracks.append((knob, "translation", knob_pos, "LINEAR"))
+    tracks.append((knob, "scale", np.where((t >= 1.5)[:, None], 1.0, TINY) * np.ones((len(t), 3)), "STEP"))
+    tracks.append((knob, "rotation", np.array([[np.sin(x / 2), 0, 0, np.cos(x / 2)] for x in turns]), "LINEAR"))
+    new_input = g.append(t[:, None], "SCALAR")
+    clip["channels"], clip["samplers"] = [], []
+    for node, path, values, interp in tracks:
+        clip["samplers"].append({"input": new_input, "output": g.append(values, "VEC4" if path == "rotation" else "VEC3"),
+                                 "interpolation": interp})
+        clip["channels"].append({"sampler": len(clip["samplers"]) - 1, "target": {"node": node, "path": path}})
+    clip["name"] = "Paso7_1_brazo_de_punteria_distal"
+    print(f"7.1: brazo alargado {DISTAL_STRETCH*1000:.1f} mm; se acerca 4-9 s; perilla 10-18 s; dura {T:.0f} s")
+
+
 if __name__ == "__main__":
     action, src, dst = sys.argv[1:4]
+    if action == "brazo_distal":             # paso 7.1, a partir del 6.9 ya ajustado (tmp-a17)
+        glb = Glb(src)
+        brazo_distal(glb, sys.argv[4], sys.argv[5])
+        glb.save(dst)
+        sys.exit()
     if action == "retiro":                   # paso 6.9, a partir del 6.7/6.8 ya ajustado (tmp-a16) y el 6.1 (tmp-a10)
         glb = Glb(src)
         retiro_proximal(glb, sys.argv[4])
