@@ -1466,8 +1466,210 @@ def broca_tope(g, drill_stl, stop_stl):
           f"{MEASURED*1000:.0f} mm más allá del manguito (punta del pin a {-pin_tip_z*1000:.1f} mm); dura {T:.0f} s")
 
 
+# ---------- Paso 6.7: hoja helicoidal en el impactador e inserción inicial con golpes suaves ----------
+# Hoja_Helicoidal_10.5x75mm_animacion.stl (mm): punta helicoidal Φ10,5 en z 0-33, cuello 35-38, caña Φ10 hasta 75,
+# rosca interior al fondo (62-75 mm), canal de 3,3 mm. Impactor_Hoja_PFNA (M8x1,25 rosca derecha): rosca en z 0-6,
+# hombro Φ10 desde 6 mm (se apoya en el fondo de la hoja), mango 215-345 mm, cabeza de golpe 345-364 mm, canulado.
+# Llave_Oposicion: placa de 3,5 mm con un agujero de ~Φ10,2 que abraza la caña de la hoja y la sostiene mientras se
+# enrosca el impactor (rosca derecha: visto desde la punta de la hoja, el impactor gira en contra de las manecillas).
+# El martillo es el mismo del paso 5.4 (se copia del paso8). La hoja entra sobre el pin por el manguito; la parte
+# manual llega a la cortical preparada y los golpes la hacen avanzar 4 mm cada uno.
+THREAD_ENGAGE = 0.006       # el impactor entra 6 mm en la hoja (rosca de 6 mm hasta el hombro)
+THREAD_PITCH = 0.00125
+TAPS, TAP_STEP = 6, 0.004
+
+
+def copy_node_mesh(g, source_path, node_name):
+    src = Glb(source_path)
+    snode = src.node(node_name)
+    mesh = src.doc["meshes"][snode["mesh"]]
+    prims = []
+    for p in mesh["primitives"]:
+        new = {"attributes": {}}
+        for key, index in p["attributes"].items():
+            data, acc = read_any(src, index)
+            new["attributes"][key] = g.append_raw(data.copy(), acc["componentType"], acc["type"], 34962)
+        data, acc = read_any(src, p["indices"])
+        new["indices"] = g.append_raw(data[:, 0].copy(), acc["componentType"], "SCALAR", 34963)
+        if "material" in p:
+            g.doc["materials"].append(src.doc["materials"][p["material"]])
+            new["material"] = len(g.doc["materials"]) - 1
+        prims.append(new)
+    g.doc["meshes"].append({"name": mesh["name"], "primitives": prims})
+    return len(g.doc["meshes"]) - 1
+
+
+def frame_quat(x, z):
+    """Cuaternión de una base con el eje x y el eje z dados (se ortogonaliza z)."""
+    x = x / np.linalg.norm(x)
+    z = z - (z @ x) * x
+    z /= np.linalg.norm(z)
+    return matrix_quat(np.column_stack([x, np.cross(z, x), z]))
+
+
+def hoja_impactor(g, blade_stl, impactor_stl, wrench_stl, hammer_glb):
+    nodes = g.doc["nodes"]
+    idx = {n["name"]: k for k, n in enumerate(nodes)}
+    old = freeze_final(g)
+    clip = g.doc["animations"][0]
+    # Piezas que ya no aparecen en este paso: se quitan del archivo (así pesa menos).
+    for name in ("Medidor_de_profundidad", "Broca_canulada_cortical_proximal", "Drill_Sleeve_3_2mm", "Trocar_3_2mm"):
+        nodes[idx[name]].pop("mesh", None)
+    tubo, conj = idx["Blade_Nail_Combination_Sleeve_Tubo_malla"], idx["Clavo_cefalomedular_conjunto"]
+    Mc = world_matrix(g, conj)
+    Mt = node_matrix(nodes[tubo])
+    Rt = Mt[:3, :3]
+    M_sleeve = Mc @ Mt
+    to_sleeve = np.linalg.inv(M_sleeve)
+    pin = idx["Pin_guia_roscado_3.2x400"]
+    Mpin = world_matrix(g, pin)
+    u = Mpin[:3, :3] @ [0, 0, 1]                                   # eje del pin, hacia afuera
+    tail_z = (to_sleeve @ np.r_[Mpin[:3, 3] + 0.400 * u, 1])[2]
+    origin = (M_sleeve @ np.r_[0, 0, 0, 1])[:3]                     # punta del manguito, sobre el eje
+    origin = origin + ((Mpin[:3, 3] - origin) - ((Mpin[:3, 3] - origin) @ u) * u)   # exactamente sobre el pin
+    on_axis = lambda s: origin + np.outer(np.atleast_1d(s), u)
+    side = Mc[:3, :3] @ Rt[:, 0]
+    side = side - (side @ u) * u
+    side /= np.linalg.norm(side)
+    Mi = world_matrix(g, idx["Instrumental"])
+    to_inst = np.linalg.inv(Mi)
+    loc = lambda P: (np.c_[P, np.ones(len(P))] @ to_inst.T)[:, :3]
+    qloc = lambda q: quat_mul(matrix_quat(to_inst[:3, :3]), np.array([q]))[0]
+    T = 70.0
+    fps = 30
+    t = np.arange(0, T + 1e-9, 1 / fps)
+    ease = lambda a, b: smooth((t - a) / (b - a))
+    tracks = []
+    # 1) El perforador saca la broca con tope por el pin y se aparta (1-6 s); la llave en T afloja (6,5-13,3 s);
+    #    la broca sale del portabrocas y se retira; luego se va el perforador.
+    perf, chuck = idx["Perforador_quirurgico"], idx["Portabrocas_giratorio"]
+    out_p, side_p = Mi[:3, :3].T @ u, Mi[:3, :3].T @ side
+    first = old[("Perforador_quirurgico", "translation")][1][0]
+    p0 = first - 0.30 * out_p - 0.25 * side_p
+    k_now = (old[("Perforador_quirurgico", "translation")][1][-1] - p0) @ out_p
+    k_clear = 0.020 + REAM_BIT_LENGTH
+    k_t = k_now + (k_clear - k_now) * ease(1.0, 5.0)
+    side_t = 0.25 * ease(5.0, 6.2)
+    key = idx["Llave_en_T_portabrocas"]
+    kt, kv, _ = old[("Llave_en_T_portabrocas", "scale")]
+    shown = kt[kv[:, 0] > 0.5]
+    w1 = shown[0] - 0.05                                    # en el 6.6 la primera vez que aparece la llave afloja
+    w1_end = shown[np.argmax(np.diff(shown) > 1.0)] + 0.05 if np.any(np.diff(shown) > 1.0) else shown[-1] + 0.05
+    L1 = 6.5
+    inside = (t >= L1) & (t <= L1 + (w1_end - w1))
+    srct = np.where(inside, w1 + (t - L1), w1)
+    for path in ("translation", "rotation", "scale"):
+        vals = sample(old[("Llave_en_T_portabrocas", path)], srct)
+        if path == "scale":
+            vals = np.where(inside[:, None], vals, TINY)
+        tracks.append((key, path, vals, "STEP" if path == "scale" else "LINEAR"))
+    a = L1 + (w1_end - w1) + 0.3
+    drill = idx["Broca_canulada_con_tope"]
+    qd = np.array(nodes[drill]["rotation"], float)
+    zdir = quat_matrix(qd)[:, 2]
+    d0 = np.array(nodes[drill]["translation"], float)
+    tracks.append((drill, "translation", d0 - (ease(a, a + 1.5) * 0.08 + ease(a + 1.5, a + 2.5) * 0.25)[:, None] * zdir, "LINEAR"))
+    tracks.append((drill, "rotation", np.repeat(qd[None], len(t), 0), "LINEAR"))
+    tracks.append((drill, "scale", np.where((t >= a + 2.5)[:, None], TINY, 1.0) * np.ones((len(t), 3)), "STEP"))
+    gone = a + 3.0
+    side_t = np.where(t >= gone, 0.25 + 0.35 * ease(gone, gone + 2.0), side_t)
+    tracks.append((perf, "translation", p0 + k_t[:, None] * out_p + side_t[:, None] * side_p, "LINEAR"))
+    tracks.append((perf, "scale", np.where((t >= gone + 2.0)[:, None], TINY, 1.0) * np.ones((len(t), 3)), "STEP"))
+    # 2) Armado a un lado (en línea con el pin, 0,20 m al costado y 0,25 m afuera): la llave de oposición abraza la
+    #    caña de la hoja; el impactor se acerca, se enrosca (rosca derecha) mientras la llave la sostiene; sale la llave.
+    blade_mesh = stl_mesh(g, blade_stl, "Hoja_helicoidal_10.5x75", [0.86, 0.80, 0.55, 1.0])
+    imp_mesh = stl_mesh(g, impactor_stl, "Impactor_de_la_hoja", [0.80, 0.81, 0.83, 1.0])
+    wr_mesh = stl_mesh(g, wrench_stl, "Llave_de_oposicion", [0.70, 0.72, 0.75, 1.0])
+    ham_mesh = copy_node_mesh(g, hammer_glb, "Martillo_malla")
+    perp = np.cross(u, side)
+    qaxis = frame_quat(side, u)                              # x a un costado, z a lo largo del pin (hacia afuera)
+    def add(name, mesh):
+        nodes.append({"name": name, "mesh": mesh, "rotation": qloc(qaxis).tolist(), "scale": [TINY] * 3})
+        nodes[idx["Instrumental"]].setdefault("children", []).append(len(nodes) - 1)
+        return len(nodes) - 1
+    blade, imp, wrench = add("Hoja_helicoidal", blade_mesh), add("Impactor_de_la_hoja", imp_mesh), add("Llave_de_oposicion", wr_mesh)
+    b = gone + 2.5                                          # 18-19 s aprox.
+    bench = lambda s: on_axis(s) + 0.20 * side + 0.0 * perp   # recta paralela al pin, al costado
+    # Posición de la punta de la hoja a lo largo del pin (z del manguito) en cada momento.
+    s_bench = 0.45
+    ins = b + 18.0                                          # empieza a llevarse el conjunto al pin
+    s_tip = np.full(len(t), s_bench)
+    s_tip = np.where(t >= ins + 2.0, s_bench + ((tail_z + 0.03) - s_bench) * ease(ins + 2.0, ins + 3.5), s_tip)
+    lateral = 0.20 * (1 - ease(ins, ins + 2.0))
+    push = ins + 4.0
+    first_bone = SLEEVE_END - BIT_STOP                      # donde quedó la cortical preparada
+    s_tip = np.where(t >= push, (tail_z + 0.03) + (first_bone - (tail_z + 0.03)) * ease(push, push + 6.0), s_tip)
+    tap0 = push + 7.0
+    tap_period = 1.6
+    hits = tap0 + tap_period * np.arange(TAPS) + 0.9        # momento de cada golpe
+    for i, h in enumerate(hits):
+        s_tip = np.where(t >= h, first_bone - TAP_STEP * (i + smooth((t - h) / 0.12)), s_tip)
+    tip_world = on_axis(s_tip) + lateral[:, None] * side
+    blade_pos = loc(tip_world)
+    tracks.append((blade, "translation", blade_pos, "LINEAR"))
+    tracks.append((blade, "scale", np.where((t >= b)[:, None], 1.0, TINY) * np.ones((len(t), 3)), "STEP"))
+    # Impactor: su punta (z 0) va a z 69 mm de la hoja al terminar de enroscar.
+    seat = 0.075 - THREAD_ENGAGE
+    c = b + 4.0                                             # llave puesta; se acerca el impactor
+    off = np.where(t < c + 2.0, 0.075 + 0.08 * (1 - ease(c, c + 2.0)), 0.075)
+    turning = ease(c + 2.5, c + 8.5)
+    off = np.where(t >= c + 2.5, 0.075 - THREAD_ENGAGE * turning, off)
+    imp_pos = loc(tip_world + off[:, None] * u)
+    tracks.append((imp, "translation", imp_pos, "LINEAR"))
+    tracks.append((imp, "scale", np.where((t >= c - 0.5)[:, None], 1.0, TINY) * np.ones((len(t), 3)), "STEP"))
+    turns = turning * THREAD_ENGAGE / THREAD_PITCH * 2 * np.pi            # 4,8 vueltas (rosca de 6 mm, paso 1,25)
+    q_imp = np.array([quat_mul(qloc(qaxis), np.array([[0, 0, np.sin(-x / 2), np.cos(-x / 2)]]))[0] for x in turns])
+    tracks.append((imp, "rotation", q_imp, "LINEAR"))
+    # Llave de oposición: entra por atrás de la hoja hasta la caña (z 50 mm) y la sostiene mientras gira el impactor.
+    # Al terminar sale por la punta de la hoja (por atrás ya está el mango del impactor) y se aparta.
+    w_on = 0.050
+    wz = np.where(t < b + 3.5, w_on + 0.06 * (1 - ease(b + 0.5, b + 3.5)), w_on)
+    wz = np.where(t >= c + 9.0, w_on - 0.085 * ease(c + 9.0, c + 12.0), wz)
+    w_world = tip_world + wz[:, None] * u + (0.10 * ease(c + 12.0, c + 13.0))[:, None] * perp
+    tracks.append((wrench, "translation", loc(w_world), "LINEAR"))
+    tracks.append((wrench, "scale", np.where(((t >= b + 0.5) & (t < c + 13.5))[:, None], 1.0, TINY) * np.ones((len(t), 3)), "STEP"))
+    assert c + 13.5 <= ins, "el conjunto se lleva al pin después de quitar la llave"
+    # 3) Martillo: golpes suaves sobre la cabeza del impactor (z 364 mm del impactor), a lo largo del pin.
+    acc = [g.doc["accessors"][p["attributes"]["POSITION"]] for p in g.doc["meshes"][ham_mesh]["primitives"]]
+    hmin, hmax = np.min([x["min"] for x in acc], 0), np.max([x["max"] for x in acc], 0)
+    hv = np.concatenate([g.array(p["attributes"]["POSITION"]).astype(float) for p in g.doc["meshes"][ham_mesh]["primitives"]])
+    face_pts = hv[hv[:, 0] < hmin[0] + 0.0015]
+    face = np.array([hmin[0], *((face_pts[:, 1:].min(0) + face_pts[:, 1:].max(0)) / 2)])   # centro de la cara de golpe (-x)
+    head_end = tip_world + (off[:, None] + 0.364) * u       # cabeza del impactor, pegada al conjunto
+    q_ham = frame_quat(u, -perp)                            # x del martillo a lo largo del pin; mango hacia abajo
+    Rh = quat_matrix(q_ham)
+    lift = np.zeros(len(t))
+    for h in hits:
+        lift = np.where((t > h - tap_period + 0.15) & (t <= h), 0.07 * np.sin(np.pi * np.clip((h - t) / (tap_period - 0.15), 0, 1)) ** 0.7, lift)
+    ham_world = head_end - (Rh @ face)[None, :] + (lift + 0.0005)[:, None] * u
+    nodes.append({"name": "Martillo", "mesh": ham_mesh, "rotation": qloc(q_ham).tolist(), "scale": [TINY] * 3})
+    ham = len(nodes) - 1
+    nodes[idx["Instrumental"]]["children"].append(ham)
+    arrive = tap0 - 0.6
+    approach = (1 - ease(arrive - 1.5, arrive))[:, None] * (0.15 * u - 0.10 * perp)
+    tracks.append((ham, "translation", loc(ham_world + approach), "LINEAR"))
+    tracks.append((ham, "scale", np.where((t >= arrive - 1.5)[:, None], 1.0, TINY) * np.ones((len(t), 3)), "STEP"))
+    new_input = g.append(t[:, None], "SCALAR")
+    clip["channels"], clip["samplers"] = [], []
+    for node, path, values, interp in tracks:
+        clip["samplers"].append({"input": new_input, "output": g.append(values, "VEC4" if path == "rotation" else "VEC3"),
+                                 "interpolation": interp})
+        clip["channels"].append({"sampler": len(clip["samplers"]) - 1, "target": {"node": node, "path": path}})
+    clip["name"] = "Paso6_7_hoja_helicoidal_impactor_e_insercion"
+    last = hits[-1] + 1.0
+    print(f"6.7: broca fuera 1-{gone + 2:.1f} s; hoja e impactor armados {b:.1f}-{c + 13.5:.1f} s (llave de oposición); "
+          f"al pin {ins:.1f} s; empuje hasta la cortical {push:.1f}-{push + 6:.1f} s; {TAPS} golpes {hits[0]:.1f}-{hits[-1]:.1f} s "
+          f"(punta a {(first_bone - TAPS * TAP_STEP)*-1000:.0f} mm más allá del manguito); dura {T:.0f} s (fin de los golpes {last:.1f})")
+    return {"mount_end": c + 13.5, "taps_start": arrive - 1.5, "end": last + 2.0}
+
+
 if __name__ == "__main__":
     action, src, dst = sys.argv[1:4]
+    if action == "hoja":                     # paso 6.7, a partir del 6.6 ya ajustado (tmp-a15)
+        glb = Glb(src)
+        hoja_impactor(glb, *sys.argv[4:8])
+        glb.save(dst)
+        sys.exit()
     if action == "broca_tope":               # paso 6.6, a partir del 6.5 ya ajustado (tmp-a14)
         glb = Glb(src)
         broca_tope(glb, sys.argv[4], sys.argv[5])
