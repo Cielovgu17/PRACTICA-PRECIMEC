@@ -25,3 +25,5 @@ estas son copias con las correcciones aplicadas por las herramientas de `ilustra
 Bloqueo proximal: para que el pin guía vaya por el centro de la cabeza sin que las piezas se atraviesen, se conserva el ángulo del instrumental (CCD 130°) y `ajustar_animaciones.py` baja 25 mm el orificio de la hoja en el clavo (la parte proximal gruesa queda más larga; se aplica en todos los pasos desde el 5.1) y alarga 25 mm el tramo recto del brazo de soporte. Las guías, el perforador y el pin bajan lo mismo, sin girar.
 
 `aligerar.py` promedia los puntos de cada pieza completa (no por partes) para que no queden rendijas entre las partes en que Blender divide las piezas grandes.
+
+Desde el paso 5.5 no se muestran las marcas del hueso trabajado en la etapa del canal medular (hueco del abridor, túnel de la broca de Φ16,5 y canal escariado): `ilustraciones/quitar_marcas.py` se las quita a cada archivo de esos pasos después de prepararlo.
