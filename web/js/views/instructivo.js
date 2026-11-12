@@ -123,12 +123,13 @@ export async function instructivoView(stepId) {
       isLeaf && h('button', {
         class: 'btn step-done',
         type: 'button',
-        // El texto del botón ya dice el estado; aria-pressed además lo anunciaría dos veces.
+        // El botón siempre dice «Completado»; el estado lo muestran el visto y aria-pressed.
+        'aria-pressed': done ? 'true' : 'false',
         onClick: () => {
           setDone(step.id, !state.done.has(step.id));
           render();
         },
-      }, done && icon('check'), done ? 'Completado' : 'Marcar como completado'),
+      }, done && icon('check'), 'Completado'),
     );
   }
 
