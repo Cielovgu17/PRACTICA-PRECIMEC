@@ -1767,8 +1767,156 @@ def hoja_impactor(g, blade_stl, impactor_stl, wrench_stl, hammer_glb):
     return {"mount_end": c + 13.5, "taps_start": arrive - 1.5, "end": last + 2.0}
 
 
+# ---------- Paso 6.9: retiro del instrumental proximal ----------
+# Empieza como termina el 6.8 (hoja entera adentro y cerrada). El impactor se desenrosca (en contra de las manecillas,
+# visto desde el mango) y sale; el pin guía se desenrosca y sale por su eje; se presiona el botón de liberación del
+# bloque del brazo (la placa con la ventana ovalada en el costado del bloque, por donde pasa el manguito: se separa del
+# modelo del brazo para que se vea el movimiento) y sale el manguito protector con su tuerca; por último se afloja la
+# perilla y el brazo se retira, con el mismo movimiento con que se montó en el 6.1, al revés. Quedan el clavo, la hoja
+# y el mango de inserción.
+BUTTON_X = -0.0990 + HOLE_DROP * 0.0669   # placa del botón: x > este valor en la malla del brazo (ya alargado)
+BUTTON_Z = (0.088 - HOLE_DROP * 0.9978, 0.142 - HOLE_DROP * 0.9978)
+BUTTON_PRESS = 0.003
+
+
+def separar_boton(g, arm_node):
+    """Saca de la malla del brazo los triángulos de la placa del botón y los pone en una malla aparte."""
+    mesh = g.doc["meshes"][g.doc["nodes"][arm_node]["mesh"]]
+    P, N, F = [], [], []
+    count = 0
+    for prim in mesh["primitives"]:
+        pos, _ = read_any(g, prim["attributes"]["POSITION"])
+        nor, _ = read_any(g, prim["attributes"]["NORMAL"])
+        tri, acc = read_any(g, prim["indices"])
+        tri = tri.reshape(-1, 3).astype(np.int64)
+        v = pos[tri]
+        inside = ((v[:, :, 0] > BUTTON_X) & (v[:, :, 2] > BUTTON_Z[0]) & (v[:, :, 2] < BUTTON_Z[1])).all(axis=1)
+        if not inside.any():
+            continue
+        moved = tri[inside]
+        used, inv = np.unique(moved, return_inverse=True)
+        P.append(pos[used].astype(float)); N.append(nor[used].astype(float)); F.append(inv.reshape(-1, 3) + count)
+        count += len(used)
+        keep = tri[~inside]
+        if len(keep) == 0:
+            keep = tri[:1]
+        prim["indices"] = g.append_raw(keep.ravel().astype("<u4"), 5125, "SCALAR", 34963)
+        if "material" in prim:
+            material = prim["material"]
+    P, N, F = np.concatenate(P), np.concatenate(N), np.concatenate(F)
+    new = {"attributes": {"POSITION": g.append_raw(P.astype("<f4"), 5126, "VEC3", 34962),
+                          "NORMAL": g.append_raw(N.astype("<f4"), 5126, "VEC3", 34962)},
+           "indices": g.append_raw(F.ravel().astype("<u4"), 5125, "SCALAR", 34963), "material": material}
+    g.doc["meshes"].append({"name": "Boton_de_liberacion_del_manguito", "primitives": [new]})
+    print(f"   botón de liberación: {len(F)} triángulos separados del brazo")
+    return len(g.doc["meshes"]) - 1
+
+
+def retiro_proximal(g, mount_glb):
+    nodes = g.doc["nodes"]
+    idx = {n["name"]: k for k, n in enumerate(nodes)}
+    old = freeze_final(g)
+    clip = g.doc["animations"][0]
+    # Lo que ya no aparece en este paso se quita del archivo.
+    gone_names = ("Broca_canulada_con_tope", "Limitador_de_profundidad", "Llave_de_oposicion", "Martillo",
+                  "Llave_malla", "Portabrocas_malla", "Nariz", "Cabezal", "Carcasa_empunadura", "Gatillo", "Bateria",
+                  "Perforacion_cortical_proximal")
+    for name in gone_names:
+        if name in idx:
+            nodes[idx[name]].pop("mesh", None)
+    tubo, conj = idx["Blade_Nail_Combination_Sleeve_Tubo_malla"], idx["Clavo_cefalomedular_conjunto"]
+    Mc = world_matrix(g, conj)
+    Mt = node_matrix(nodes[tubo])
+    Rt = Mt[:3, :3]
+    pin = idx["Pin_guia_roscado_3.2x400"]
+    Mpin = world_matrix(g, pin)
+    u = Mpin[:3, :3] @ [0, 0, 1]
+    side = Mc[:3, :3] @ Rt[:, 0]
+    side = side - (side @ u) * u
+    side /= np.linalg.norm(side)
+    Mi = world_matrix(g, idx["Instrumental"])
+    u_i, side_i = Mi[:3, :3].T @ u, Mi[:3, :3].T @ side
+    T = 62.0
+    fps = 30
+    t = np.arange(0, T + 1e-9, 1 / fps)
+    ease = lambda a, b: smooth((t - a) / (b - a))
+    hide_after = lambda t1: np.where((t >= t1)[:, None], TINY, 1.0) * np.ones((len(t), 3))
+    tracks = []
+    # 1) Impactor: se desenrosca de la hoja (12 mm, en contra de las manecillas visto desde el mango) y sale por el pin.
+    imp = idx["Impactor_de_la_hoja"]
+    p_imp = np.array(nodes[imp]["translation"], float)
+    q_imp = np.array(nodes[imp]["rotation"], float)
+    unscrew = ease(1.5, 7.5)
+    back = THREAD_ENGAGE * unscrew + 0.45 * ease(7.5, 11.0)
+    tracks.append((imp, "translation", p_imp + back[:, None] * u_i + (0.25 * ease(11.0, 12.0))[:, None] * side_i, "LINEAR"))
+    ang = unscrew * THREAD_ENGAGE / THREAD_PITCH * 2 * np.pi
+    tracks.append((imp, "rotation", np.array([quat_mul(q_imp, np.array([[0, 0, np.sin(a / 2), np.cos(a / 2)]]))[0] for a in ang]), "LINEAR"))
+    tracks.append((imp, "scale", hide_after(12.2), "STEP"))
+    # 2) Pin guía: se desenrosca de la cabeza (en contra de las manecillas) y sale por su eje.
+    p_pin = np.array(nodes[pin]["translation"], float)
+    q_pin = np.array(nodes[pin]["rotation"], float)
+    out_pin = 0.010 * ease(12.5, 15.0) + 0.45 * ease(15.0, 19.0)
+    tracks.append((pin, "translation", p_pin + out_pin[:, None] * u_i + (0.20 * ease(19.0, 20.0))[:, None] * side_i, "LINEAR"))
+    ang = ease(12.5, 15.0) * 0.010 / THREAD_PITCH * 2 * np.pi
+    tracks.append((pin, "rotation", np.array([quat_mul(q_pin, np.array([[0, 0, np.sin(a / 2), np.cos(a / 2)]]))[0] for a in ang]), "LINEAR"))
+    tracks.append((pin, "scale", hide_after(20.2), "STEP"))
+    # 3) Botón de liberación del bloque: se presiona, sale el manguito con su tuerca por su eje y se suelta el botón.
+    arm = idx["Varilla_Refuerzo_brazo_de_soporte"]
+    button_mesh = separar_boton(g, arm)
+    nodes.append({"name": "Boton_de_liberacion_del_manguito", "mesh": button_mesh})
+    button = len(nodes) - 1
+    nodes[arm].setdefault("children", []).append(button)
+    press = ease(21.0, 21.6) * (1 - ease(29.0, 29.6))
+    tracks.append((button, "translation", np.c_[-BUTTON_PRESS * press, np.zeros(len(t)), np.zeros(len(t))], "LINEAR"))
+    sleeve_out = 0.30 * ease(22.5, 27.5)
+    for name in ("Blade_Nail_Combination_Sleeve_Tubo_malla", "Blade_Nail_Combination_Sleeve_Roscado_tuerca"):
+        k = idx[name]
+        base = np.array(nodes[k]["translation"], float)
+        tracks.append((k, "translation", base + sleeve_out[:, None] * Rt[:, 2] + (0.15 * ease(27.5, 28.5))[:, None] * Rt[:, 0], "LINEAR"))
+        tracks.append((k, "scale", hide_after(28.7), "STEP"))
+    # 4) Brazo de soporte: la perilla se afloja y el brazo sale como entró en el 6.1 (al revés), luego se aleja.
+    src_glb = Glb(mount_glb)
+    sclip = src_glb.doc["animations"][0]
+    def mount_track(name, path):
+        tr = src_glb.track(sclip, name, path)
+        if not tr:
+            return None
+        return (src_glb.array(tr[0])[:, 0].astype(float), src_glb.array(tr[1]).astype(float),
+                next(s for s in sclip["samplers"] if s["output"] == tr[1]).get("interpolation", "LINEAR"))
+    m0, m1 = 3.2, 21.2                                      # en el 6.1, de 3 a 21 s se monta el brazo y se aprieta la perilla
+    A0 = 31.0
+    src = np.clip(m1 - (t - A0), m0, m1)
+    away = ease(A0 + (m1 - m0), A0 + (m1 - m0) + 2.0)
+    for name in ("Varilla_Refuerzo_brazo_de_soporte", "Pieza_Roscada_perilla_M8"):
+        k = idx[name]
+        for path in ("translation", "rotation"):
+            tr = mount_track(name, path)
+            if tr is None:
+                continue
+            vals = sample(tr, src)
+            if path == "translation":
+                vals = vals + (0.15 * away)[:, None] * np.array([-1.0, 0, 0])
+            tracks.append((k, path, vals, "LINEAR"))
+        tracks.append((k, "scale", hide_after(A0 + (m1 - m0) + 2.2), "STEP"))
+    end = A0 + (m1 - m0) + 2.2
+    new_input = g.append(t[:, None], "SCALAR")
+    clip["channels"], clip["samplers"] = [], []
+    for node, path, values, interp in tracks:
+        clip["samplers"].append({"input": new_input, "output": g.append(values, "VEC4" if path == "rotation" else "VEC3"),
+                                 "interpolation": interp})
+        clip["channels"].append({"sampler": len(clip["samplers"]) - 1, "target": {"node": node, "path": path}})
+    clip["name"] = "Paso6_9_retiro_del_instrumental_proximal"
+    print(f"6.9: impactor fuera 1,5-12 s; pin 12,5-20 s; botón y manguito 21-29,6 s; perilla y brazo {A0:.0f}-{end:.1f} s; "
+          f"quedan clavo, hoja y mango; dura {T:.0f} s")
+
+
 if __name__ == "__main__":
     action, src, dst = sys.argv[1:4]
+    if action == "retiro":                   # paso 6.9, a partir del 6.7/6.8 ya ajustado (tmp-a16) y el 6.1 (tmp-a10)
+        glb = Glb(src)
+        retiro_proximal(glb, sys.argv[4])
+        glb.save(dst)
+        sys.exit()
     if action == "hoja":                     # paso 6.7, a partir del 6.6 ya ajustado (tmp-a15)
         glb = Glb(src)
         hoja_impactor(glb, *sys.argv[4:8])

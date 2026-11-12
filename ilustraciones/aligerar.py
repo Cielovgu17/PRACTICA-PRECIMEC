@@ -100,6 +100,13 @@ def main():
     cell = float(sys.argv[3]) / 1000 if len(sys.argv) > 3 else 0.0002
     min_points = int(sys.argv[4]) if len(sys.argv) > 4 else 150_000
     doc, binary = read(src)
+    # Las mallas que ya no usa ninguna pieza se vuelven una copia (sin datos propios) de una que sí se usa.
+    used = {n["mesh"] for n in doc["nodes"] if "mesh" in n}
+    if used:
+        some = doc["meshes"][min(used)]
+        for i in range(len(doc["meshes"])):
+            if i not in used:
+                doc["meshes"][i] = {"name": doc["meshes"][i].get("name", "") + "_sin_uso", "primitives": some["primitives"]}
     chunks, views = [], []
 
     def add(array, component, kind, target=None):
