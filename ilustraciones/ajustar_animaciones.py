@@ -1474,7 +1474,12 @@ def broca_tope(g, drill_stl, stop_stl):
 # enrosca el impactor (rosca derecha: visto desde la punta de la hoja, el impactor gira en contra de las manecillas).
 # El martillo es el mismo del paso 5.4 (se copia del paso8). La hoja entra sobre el pin por el manguito; la parte
 # manual llega a la cortical preparada y los golpes la hacen avanzar 4 mm cada uno.
-THREAD_ENGAGE = 0.006       # el impactor entra 6 mm en la hoja (rosca de 6 mm hasta el hombro)
+# Como en el video de Kang-Li: al montarla girando el impactor en contra de las manecillas (visto desde el mango), la hoja
+# queda "abierta": entre la hoja y el impactor se ve un tramo de rosca. Ya adentro del hueso se gira a favor de las
+# manecillas y se cierra (la hoja se bloquea). La rosca de la punta del impactor se alarga a 12 mm para que se vea.
+THREAD_LEN = 0.012          # rosca del impactor (antes 6 mm)
+ENGAGE_OPEN = 0.005         # abierta: la rosca entra 5 mm y quedan 7 mm a la vista
+THREAD_ENGAGE = THREAD_LEN  # cerrada: el hombro del impactor contra el fondo de la hoja
 THREAD_PITCH = 0.00125
 BLADE_STRETCH = 0.035       # la hoja pasa de 75 a 110 mm (la medida del 6.4): se alarga su caña lisa (41-61 mm)
 BLADE_LEN = 0.075 + BLADE_STRETCH
@@ -1537,7 +1542,7 @@ def hoja_impactor(g, blade_stl, impactor_stl, wrench_stl, hammer_glb):
     to_inst = np.linalg.inv(Mi)
     loc = lambda P: (np.c_[P, np.ones(len(P))] @ to_inst.T)[:, :3]
     qloc = lambda q: quat_mul(matrix_quat(to_inst[:3, :3]), np.array([q]))[0]
-    T = 78.0
+    T = 84.0
     fps = 30
     t = np.arange(0, T + 1e-9, 1 / fps)
     ease = lambda a, b: smooth((t - a) / (b - a))
@@ -1590,12 +1595,13 @@ def hoja_impactor(g, blade_stl, impactor_stl, wrench_stl, hammer_glb):
     stretch(blade_mesh, 0.041, 0.061, BLADE_STRETCH)
     # El impactor se alarga en su caña para que, con la hoja entera adentro (punta a 110 mm del manguito y su fondo en
     # la punta del manguito), el frente del mango se apoye en el extremo del manguito: ese es el tope de la inserción.
+    stretch(imp_mesh, 0.0, 0.006, THREAD_LEN - 0.006)                # rosca de la punta: de 6 a 12 mm
     iv = np.concatenate([g.array(p["attributes"]["POSITION"]).astype(float) for p in g.doc["meshes"][imp_mesh]["primitives"]])
     handle_front = iv[np.hypot(iv[:, 0], iv[:, 1]) > 0.007, 2].min()
     blade_back_final = -MEASURED + BLADE_LEN
     imp_stretch = SLEEVE_END - (blade_back_final - THREAD_ENGAGE + handle_front)
     stretch(imp_mesh, 0.030, 0.200, imp_stretch)
-    IMP_LEN = 0.364 + imp_stretch
+    IMP_LEN = 0.364 + (THREAD_LEN - 0.006) + imp_stretch
     wr_mesh = stl_mesh(g, wrench_stl, "Llave_de_oposicion", [0.70, 0.72, 0.75, 1.0])
     ham_mesh = copy_node_mesh(g, hammer_glb, "Martillo_malla")
     perp = np.cross(u, side)
@@ -1626,16 +1632,21 @@ def hoja_impactor(g, blade_stl, impactor_stl, wrench_stl, hammer_glb):
     blade_pos = loc(tip_world)
     tracks.append((blade, "translation", blade_pos, "LINEAR"))
     tracks.append((blade, "scale", np.where((t >= b)[:, None], 1.0, TINY) * np.ones((len(t), 3)), "STEP"))
-    # Impactor: su punta (z 0) va a z 69 mm de la hoja al terminar de enroscar.
+    # Impactor: se monta girando en contra de las manecillas (visto desde el mango); la rosca entra ENGAGE_OPEN y la hoja
+    # queda abierta (7 mm de rosca a la vista). Después de los golpes gira a favor de las manecillas y se cierra.
     c = b + 4.0                                            # llave puesta; se acerca el impactor
     off = np.where(t < c + 2.0, BLADE_LEN + 0.08 * (1 - ease(c, c + 2.0)), BLADE_LEN)
     turning = ease(c + 2.5, c + 8.5)
-    off = np.where(t >= c + 2.5, BLADE_LEN - THREAD_ENGAGE * turning, off)
+    off = np.where(t >= c + 2.5, BLADE_LEN - ENGAGE_OPEN * turning, off)
+    lock0 = hits[-1] + 2.5                                  # se va el martillo y se cierra la hoja
+    locking = ease(lock0, lock0 + 6.0)
+    off = off - (THREAD_LEN - ENGAGE_OPEN) * locking
     imp_pos = loc(tip_world + off[:, None] * u)
     tracks.append((imp, "translation", imp_pos, "LINEAR"))
     tracks.append((imp, "scale", np.where((t >= c - 0.5)[:, None], 1.0, TINY) * np.ones((len(t), 3)), "STEP"))
-    turns = turning * THREAD_ENGAGE / THREAD_PITCH * 2 * np.pi            # 4,8 vueltas (rosca de 6 mm, paso 1,25)
-    q_imp = np.array([quat_mul(qloc(qaxis), np.array([[0, 0, np.sin(-x / 2), np.cos(-x / 2)]]))[0] for x in turns])
+    # Ángulo alrededor del eje (hacia el mango): positivo = en contra de las manecillas visto desde el mango.
+    turns = (turning * ENGAGE_OPEN - locking * (THREAD_LEN - ENGAGE_OPEN)) / THREAD_PITCH * 2 * np.pi
+    q_imp = np.array([quat_mul(qloc(qaxis), np.array([[0, 0, np.sin(x / 2), np.cos(x / 2)]]))[0] for x in turns])
     tracks.append((imp, "rotation", q_imp, "LINEAR"))
     # Llave de oposición: entra por atrás de la hoja hasta la caña (z 50 mm) y la sostiene mientras gira el impactor.
     # Al terminar sale por la punta de la hoja (por atrás ya está el mango del impactor) y se aparta.
@@ -1663,9 +1674,9 @@ def hoja_impactor(g, blade_stl, impactor_stl, wrench_stl, hammer_glb):
     ham = len(nodes) - 1
     nodes[idx["Instrumental"]]["children"].append(ham)
     arrive = tap0 - 0.6
-    approach = (1 - ease(arrive - 1.5, arrive))[:, None] * (0.15 * u - 0.10 * perp)
+    approach = (1 - ease(arrive - 1.5, arrive) + ease(hits[-1] + 0.5, hits[-1] + 2.0))[:, None] * (0.15 * u - 0.10 * perp)
     tracks.append((ham, "translation", loc(ham_world + approach), "LINEAR"))
-    tracks.append((ham, "scale", np.where((t >= arrive - 1.5)[:, None], 1.0, TINY) * np.ones((len(t), 3)), "STEP"))
+    tracks.append((ham, "scale", np.where(((t >= arrive - 1.5) & (t < hits[-1] + 2.2))[:, None], 1.0, TINY) * np.ones((len(t), 3)), "STEP"))
     new_input = g.append(t[:, None], "SCALAR")
     clip["channels"], clip["samplers"] = [], []
     for node, path, values, interp in tracks:
