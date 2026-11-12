@@ -1474,12 +1474,16 @@ def broca_tope(g, drill_stl, stop_stl):
 # enrosca el impactor (rosca derecha: visto desde la punta de la hoja, el impactor gira en contra de las manecillas).
 # El martillo es el mismo del paso 5.4 (se copia del paso8). La hoja entra sobre el pin por el manguito; la parte
 # manual llega a la cortical preparada y los golpes la hacen avanzar 4 mm cada uno.
-# Como en el video de Kang-Li: al montarla girando el impactor en contra de las manecillas (visto desde el mango), la hoja
-# queda "abierta": entre la hoja y el impactor se ve un tramo de rosca. Ya adentro del hueso se gira a favor de las
-# manecillas y se cierra (la hoja se bloquea). La rosca de la punta del impactor se alarga a 12 mm para que se vea.
-THREAD_LEN = 0.012          # rosca del impactor (antes 6 mm)
-ENGAGE_OPEN = 0.005         # abierta: la rosca entra 5 mm y quedan 7 mm a la vista
-THREAD_ENGAGE = THREAD_LEN  # cerrada: el hombro del impactor contra el fondo de la hoja
+# Como en el video de Kang-Li: la hoja tiene dos partes, la cabeza helicoidal y el cuerpo, unidas por un vástago roscado
+# en el cuello (z ~36 mm). Al montar la hoja en el impactor girando en contra de las manecillas (visto desde el mango),
+# el impactor se aprieta del todo contra el fondo de la hoja y la cabeza se separa del cuerpo: queda "abierta", con el
+# vástago roscado a la vista en el cuello. Ya adentro del hueso, se gira a favor de las manecillas y la cabeza vuelve a
+# juntarse con el cuerpo (la hoja se cierra y se bloquea). El modelo se parte en el cuello y se agrega el vástago.
+THREAD_LEN = 0.012          # punta roscada del impactor (rosca de 0 a 6 mm y anillo roscado de 6 a 12 mm)
+THREAD_ENGAGE = THREAD_LEN  # entra entera en el agujero de la hoja (13 mm): no queda espacio entre hoja e impactor
+NECK_SPLIT = 0.0365         # corte entre la cabeza helicoidal y el cuerpo (en la ranura del cuello, Φ8,5)
+NECK_GAP = 0.006            # abierta: 6 mm de vástago roscado a la vista
+STUD_R = 0.0031             # radio del vástago roscado (menor que el cuello, 4,25 mm)
 THREAD_PITCH = 0.00125
 BLADE_STRETCH = 0.035       # la hoja pasa de 75 a 110 mm (la medida del 6.4): se alarga su caña lisa (41-61 mm)
 BLADE_LEN = 0.075 + BLADE_STRETCH
@@ -1504,6 +1508,69 @@ def copy_node_mesh(g, source_path, node_name):
         prims.append(new)
     g.doc["meshes"].append({"name": mesh["name"], "primitives": prims})
     return len(g.doc["meshes"]) - 1
+
+
+def partir_hoja(g, mesh):
+    """Parte la malla de la hoja en el cuello (NECK_SPLIT): cabeza helicoidal y cuerpo, cada uno con una tapa anular en
+    el corte, y le agrega a la cabeza el vástago roscado que entra en el cuerpo (se ve cuando la hoja está abierta)."""
+    prim = g.doc["meshes"][mesh]["primitives"][0]
+    pos, _ = read_any(g, prim["attributes"]["POSITION"])
+    nor, _ = read_any(g, prim["attributes"]["NORMAL"])
+    tri, _ = read_any(g, prim["indices"])
+    pos, nor, tri = pos.astype(float), nor.astype(float), tri.reshape(-1, 3).astype(np.int64)
+    zc = pos[tri, 2].mean(axis=1)
+    material = prim.get("material")
+    r_in, r_out = 0.00164, 0.00425
+
+    def ring_cap(z, facing):
+        ang = np.linspace(0, 2 * np.pi, 65)[:-1]
+        ring = np.stack([np.cos(ang), np.sin(ang), np.zeros_like(ang)], 1)
+        p = np.concatenate([ring * r_in, ring * r_out]) + [0, 0, z]
+        n = np.tile([0, 0, facing], (len(p), 1))
+        k = len(ang)
+        f = []
+        for i in range(k):
+            a, b_, c_, d = i, (i + 1) % k, k + i, k + (i + 1) % k
+            f += [[a, c_, b_], [b_, c_, d]] if facing > 0 else [[a, b_, c_], [b_, d, c_]]
+        return p, n, np.array(f)
+
+    def stud():
+        L = NECK_GAP + 0.004
+        nth, nz = 48, int(L / 0.0001) + 1
+        th = np.linspace(0, 2 * np.pi, nth + 1)[:-1]
+        zs = NECK_SPLIT + np.linspace(0, L, nz)
+        T, Z = np.meshgrid(th, zs)
+        R = STUD_R + 0.00028 * np.cos(2 * np.pi * (Z - NECK_SPLIT) / THREAD_PITCH - T)   # rosca helicoidal
+        p = np.stack([R * np.cos(T), R * np.sin(T), Z], -1).reshape(-1, 3)
+        n = np.stack([np.cos(T), np.sin(T), np.zeros_like(T)], -1).reshape(-1, 3)
+        f = []
+        for j in range(nz - 1):
+            for i in range(nth):
+                a, b_ = j * nth + i, j * nth + (i + 1) % nth
+                c_, d = a + nth, b_ + nth
+                f += [[a, b_, c_], [b_, d, c_]]
+        return p, n, np.array(f)
+
+    def build(name, keep, extras):
+        t_ = tri[keep]
+        used, inv = np.unique(t_, return_inverse=True)
+        P, N, F = [pos[used]], [nor[used]], [inv.reshape(-1, 3)]
+        count = len(used)
+        for p, n, f in extras:
+            P.append(p); N.append(n); F.append(f + count); count += len(p)
+        P, N, F = np.concatenate(P), np.concatenate(N), np.concatenate(F)
+        new = {"attributes": {"POSITION": g.append_raw(P.astype("<f4"), 5126, "VEC3", 34962),
+                              "NORMAL": g.append_raw(N.astype("<f4"), 5126, "VEC3", 34962)},
+               "indices": g.append_raw(F.ravel().astype("<u4"), 5125, "SCALAR", 34963)}
+        if material is not None:
+            new["material"] = material
+        g.doc["meshes"].append({"name": name, "primitives": [new]})
+        return len(g.doc["meshes"]) - 1
+
+    head = build("Hoja_helicoidal_cabeza", zc < NECK_SPLIT, [ring_cap(NECK_SPLIT, +1), stud()])
+    body = build("Hoja_helicoidal_cuerpo", zc >= NECK_SPLIT, [ring_cap(NECK_SPLIT, -1)])
+    print(f"   hoja partida en el cuello ({NECK_SPLIT*1000:.1f} mm): cabeza helicoidal con vástago roscado y cuerpo")
+    return head, body
 
 
 def frame_quat(x, z):
@@ -1593,15 +1660,17 @@ def hoja_impactor(g, blade_stl, impactor_stl, wrench_stl, hammer_glb):
             nz = np.where(z < a, z, np.where(z < b_, a + (z - a) * (b_ - a + amount) / (b_ - a), z + amount))
             g.set_array(p["attributes"]["POSITION"], np.c_[v[:, :2], nz].astype(np.float32))
     stretch(blade_mesh, 0.041, 0.061, BLADE_STRETCH)
-    # El impactor se alarga en su caña para que, con la hoja entera adentro (punta a 110 mm del manguito y su fondo en
-    # la punta del manguito), el frente del mango se apoye en el extremo del manguito: ese es el tope de la inserción.
-    stretch(imp_mesh, 0.0, 0.006, THREAD_LEN - 0.006)                # rosca de la punta: de 6 a 12 mm
+    head_mesh, body_mesh = partir_hoja(g, blade_mesh)
+    g.doc["meshes"][blade_mesh] = g.doc["meshes"][head_mesh]        # la malla entera ya no se usa: no ocupa espacio
+    head_mesh = blade_mesh
+    # El impactor se alarga en su caña para que, con la hoja entera adentro y cerrada (punta a 110 mm del manguito y su
+    # fondo en la punta del manguito), el frente del mango se apoye en el extremo del manguito: es el tope de la inserción.
     iv = np.concatenate([g.array(p["attributes"]["POSITION"]).astype(float) for p in g.doc["meshes"][imp_mesh]["primitives"]])
     handle_front = iv[np.hypot(iv[:, 0], iv[:, 1]) > 0.007, 2].min()
     blade_back_final = -MEASURED + BLADE_LEN
     imp_stretch = SLEEVE_END - (blade_back_final - THREAD_ENGAGE + handle_front)
     stretch(imp_mesh, 0.030, 0.200, imp_stretch)
-    IMP_LEN = 0.364 + (THREAD_LEN - 0.006) + imp_stretch
+    IMP_LEN = 0.364 + imp_stretch
     wr_mesh = stl_mesh(g, wrench_stl, "Llave_de_oposicion", [0.70, 0.72, 0.75, 1.0])
     ham_mesh = copy_node_mesh(g, hammer_glb, "Martillo_malla")
     perp = np.cross(u, side)
@@ -1610,14 +1679,18 @@ def hoja_impactor(g, blade_stl, impactor_stl, wrench_stl, hammer_glb):
         nodes.append({"name": name, "mesh": mesh, "rotation": qloc(qaxis).tolist(), "scale": [TINY] * 3})
         nodes[idx["Instrumental"]].setdefault("children", []).append(len(nodes) - 1)
         return len(nodes) - 1
-    blade, imp, wrench = add("Hoja_helicoidal", blade_mesh), add("Impactor_de_la_hoja", imp_mesh), add("Llave_de_oposicion", wr_mesh)
+    head, body = add("Hoja_helicoidal_cabeza", head_mesh), add("Hoja_helicoidal_cuerpo", body_mesh)
+    imp, wrench = add("Impactor_de_la_hoja", imp_mesh), add("Llave_de_oposicion", wr_mesh)
     b = gone + 2.5                                          # 18-19 s aprox.
-    bench = lambda s: on_axis(s) + 0.20 * side + 0.0 * perp   # recta paralela al pin, al costado
-    # Posición de la punta de la hoja a lo largo del pin (z del manguito) en cada momento.
+    c = b + 4.0                                             # llave puesta; se acerca el impactor
+    turning = ease(c + 2.5, c + 8.5)                        # se enrosca el impactor y la cabeza se abre
+    # Posición de la punta de la hoja (cabeza) a lo largo del pin (z del manguito) en cada momento. En la mesa el cuerpo
+    # queda quieto (lo sostiene la llave) y la cabeza se separa hacia adelante.
     s_bench = 0.45
     ins = b + 18.0                                          # empieza a llevarse el conjunto al pin
-    s_tip = np.full(len(t), s_bench)
-    s_tip = np.where(t >= ins + 2.0, s_bench + ((tail_z + 0.03) - s_bench) * ease(ins + 2.0, ins + 3.5), s_tip)
+    s_tip = np.full(len(t), s_bench) - NECK_GAP * turning
+    s_open = s_bench - NECK_GAP
+    s_tip = np.where(t >= ins + 2.0, s_open + ((tail_z + 0.03) - s_open) * ease(ins + 2.0, ins + 3.5), s_tip)
     lateral = 0.20 * (1 - ease(ins, ins + 2.0))
     push = ins + 4.0
     first_bone = SLEEVE_END - BIT_STOP                      # donde quedó la cortical preparada
@@ -1629,23 +1702,26 @@ def hoja_impactor(g, blade_stl, impactor_stl, wrench_stl, hammer_glb):
     for i, h in enumerate(hits):
         s_tip = np.where(t >= h, first_bone - tap_step * (i + smooth((t - h) / 0.12)), s_tip)
     tip_world = on_axis(s_tip) + lateral[:, None] * side
-    blade_pos = loc(tip_world)
-    tracks.append((blade, "translation", blade_pos, "LINEAR"))
-    tracks.append((blade, "scale", np.where((t >= b)[:, None], 1.0, TINY) * np.ones((len(t), 3)), "STEP"))
-    # Impactor: se monta girando en contra de las manecillas (visto desde el mango); la rosca entra ENGAGE_OPEN y la hoja
-    # queda abierta (7 mm de rosca a la vista). Después de los golpes gira a favor de las manecillas y se cierra.
-    c = b + 4.0                                            # llave puesta; se acerca el impactor
-    off = np.where(t < c + 2.0, BLADE_LEN + 0.08 * (1 - ease(c, c + 2.0)), BLADE_LEN)
-    turning = ease(c + 2.5, c + 8.5)
-    off = np.where(t >= c + 2.5, BLADE_LEN - ENGAGE_OPEN * turning, off)
+    # Apertura de la cabeza: se abre al enroscar el impactor y, ya adentro, se cierra (la cabeza queda quieta en el hueso
+    # y el cuerpo, con el impactor, avanza hasta juntarse con ella).
     lock0 = hits[-1] + 2.5                                  # se va el martillo y se cierra la hoja
     locking = ease(lock0, lock0 + 6.0)
-    off = off - (THREAD_LEN - ENGAGE_OPEN) * locking
-    imp_pos = loc(tip_world + off[:, None] * u)
+    gap = NECK_GAP * (turning - locking)
+    body_world = tip_world + gap[:, None] * u
+    shown_blade = np.where((t >= b)[:, None], 1.0, TINY) * np.ones((len(t), 3))
+    tracks.append((head, "translation", loc(tip_world), "LINEAR"))
+    tracks.append((head, "scale", shown_blade, "STEP"))
+    tracks.append((body, "translation", loc(body_world), "LINEAR"))
+    tracks.append((body, "scale", shown_blade, "STEP"))
+    # Impactor: se enrosca del todo en el fondo de la hoja girando en contra de las manecillas (visto desde el mango);
+    # al final gira a favor de las manecillas para cerrar la hoja.
+    off = np.where(t < c + 2.0, BLADE_LEN + 0.08 * (1 - ease(c, c + 2.0)), BLADE_LEN)
+    off = np.where(t >= c + 2.5, BLADE_LEN - THREAD_ENGAGE * turning, off)
+    imp_pos = loc(body_world + off[:, None] * u)
     tracks.append((imp, "translation", imp_pos, "LINEAR"))
     tracks.append((imp, "scale", np.where((t >= c - 0.5)[:, None], 1.0, TINY) * np.ones((len(t), 3)), "STEP"))
     # Ángulo alrededor del eje (hacia el mango): positivo = en contra de las manecillas visto desde el mango.
-    turns = (turning * ENGAGE_OPEN - locking * (THREAD_LEN - ENGAGE_OPEN)) / THREAD_PITCH * 2 * np.pi
+    turns = (turning * THREAD_ENGAGE - locking * NECK_GAP) / THREAD_PITCH * 2 * np.pi
     q_imp = np.array([quat_mul(qloc(qaxis), np.array([[0, 0, np.sin(x / 2), np.cos(x / 2)]]))[0] for x in turns])
     tracks.append((imp, "rotation", q_imp, "LINEAR"))
     # Llave de oposición: entra por atrás de la hoja hasta la caña (z 50 mm) y la sostiene mientras gira el impactor.
@@ -1653,7 +1729,7 @@ def hoja_impactor(g, blade_stl, impactor_stl, wrench_stl, hammer_glb):
     w_on = 0.070
     wz =np.where(t < b + 3.5, w_on + 0.06 * (1 - ease(b + 0.5, b + 3.5)), w_on)
     wz = np.where(t >= c + 9.0, w_on - 0.105 * ease(c + 9.0, c + 12.0), wz)
-    w_world = tip_world + wz[:, None] * u + (0.10 * ease(c + 12.0, c + 13.0))[:, None] * perp
+    w_world = body_world + wz[:, None] * u + (0.10 * ease(c + 12.0, c + 13.0))[:, None] * perp
     tracks.append((wrench, "translation", loc(w_world), "LINEAR"))
     tracks.append((wrench, "scale", np.where(((t >= b + 0.5) & (t < c + 13.5))[:, None], 1.0, TINY) * np.ones((len(t), 3)), "STEP"))
     assert c + 13.5 <= ins, "el conjunto se lleva al pin después de quitar la llave"
@@ -1663,7 +1739,7 @@ def hoja_impactor(g, blade_stl, impactor_stl, wrench_stl, hammer_glb):
     hv = np.concatenate([g.array(p["attributes"]["POSITION"]).astype(float) for p in g.doc["meshes"][ham_mesh]["primitives"]])
     face_pts = hv[hv[:, 0] < hmin[0] + 0.0015]
     face = np.array([hmin[0], *((face_pts[:, 1:].min(0) + face_pts[:, 1:].max(0)) / 2)])   # centro de la cara de golpe (-x)
-    head_end = tip_world + (off[:, None] + IMP_LEN) * u     # cabeza del impactor, pegada al conjunto
+    head_end = body_world + (off[:, None] + IMP_LEN) * u    # cabeza del impactor, pegada al conjunto
     q_ham = frame_quat(u, -perp)                            # x del martillo a lo largo del pin; mango hacia abajo
     Rh = quat_matrix(q_ham)
     lift = np.zeros(len(t))
