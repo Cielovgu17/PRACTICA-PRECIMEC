@@ -110,7 +110,7 @@ export async function instructivoView(stepId) {
     return h('div', { class: 'step-detail' },
       field('Descripción', step.description),
       instruments.length > 0 && h('div', { class: 'step-field' },
-        h('h3', {}, 'Instrumental'),
+        h('h3', {}, 'Instrumental usado'),
         h('ul', { class: 'chips' }, instruments.map((item) => h('li', { class: 'chip' }, item.name))),
       ),
       step.recommendations && h('div', { class: 'step-note' }, h('h3', {}, 'Recomendaciones para el instrumentador'), h('p', {}, step.recommendations)),

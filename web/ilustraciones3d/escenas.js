@@ -675,7 +675,7 @@ const ESCENAS = {
     render(scene, camera);
     const p = projector(camera);
     title('En un paciente obeso', 'Inclinar el cuerpo hacia el lado sano y aducir el miembro inferior.');
-    callout(p(troch), 860, 845, ['Trocánter mayor destacado: cuesta menos', 'introducir el clavo principal'], { color: C.orange, size: 28 });
+    callout(p(troch), 860, 845, ['Trocánter mayor destacado: cuesta menos', 'introducir el clavo'], { color: C.orange, size: 28 });
     const head = p([-0.62, BODY_Y, -0.1]);
     arrow2d(head[0] - 60, head[1] - 20, head[0] - 60, head[1] - 150);
     label(head[0] - 90, head[1] - 180, 'Hacia el lado sano', { color: C.orange, plate: true });
@@ -1007,9 +1007,9 @@ const ESCENAS = {
     label(lb[0], lb[1] + 8, ['Trocánter', 'menor'], { size: 25, color: C.muted, plate: true });
     const na = p([a + 0.07, -0.03, 0]);
     const nb = p([b + 0.07, -0.03, 0]);
-    label(na[0], na[1], ['Clavo', 'principal'], { size: 34, color: C.orange, weight: 600 });
+    label(na[0], na[1], ['Clavo', 'corto'], { size: 34, color: C.orange, weight: 600 });
     label(na[0], na[1] + 100, ['Si la línea de fractura', 'no baja del', 'trocánter menor'], { size: 25, weight: 400 });
-    label(nb[0], nb[1], ['Clavo', 'extendido'], { size: 34, color: C.orange, weight: 600 });
+    label(nb[0], nb[1], ['Clavo', 'largo'], { size: 34, color: C.orange, weight: 600 });
     label(nb[0], nb[1] + 100, ['Se usa si la línea', 'de fractura baja', 'del trocánter menor'], { size: 25, weight: 400 });
     note();
   },
