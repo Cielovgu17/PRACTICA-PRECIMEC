@@ -2055,7 +2055,7 @@ def guias_distales(g, ext_stl, mid_stl, troc_stl):
 # (todavía no limita nada). La broca perfora girando la primera cortical y se detiene DISTAL_SHORT antes de la segunda
 # cortical; el tope queda entonces STOP_GAP_73 antes de la entrada de la guía intermedia. En el 7.4 se ajusta a 1 cm.
 DISTAL_BIT_LENGTH = 0.300
-DISTAL_SHORT = 0.003
+DISTAL_SHORT = 0.0005      # la punta llega a la pared opuesta (texto del 7.4); con el tope a 1 cm, el 7.5 la atraviesa
 STOP_GAP_73 = 0.020
 STOP_GAP_74 = 0.010
 PERF_PARTS = ("Portabrocas_malla", "Llave_malla", "Nariz", "Cabezal", "Carcasa_empunadura", "Gatillo", "Bateria")
@@ -2368,8 +2368,98 @@ def perforacion_final(g):
           f"{end*1000:.1f} mm (2-10 s) y el tope se apoya en la guía; dura {T:.0f} s")
 
 
+# ---------- Paso 7.6: retiro de la broca y la guía intermedia, y medidor de profundidad ----------
+# Medidor_Tornillo_Cortical_Mango.stl (mm): tubo Φ4,8 de 166 mm con la punta achaflanada (Φ4 a z 0,5 mm: ahí se apoya
+# en el borde del orificio de Φ4), ventana lateral con la escala y canal de Φ1,7 atrás. Medidor_Tornillo_Cortical_
+# Gancho.stl: varilla Φ1,6 que pasa por el mango; en el modelo armado su gancho (z 130-131,25, hacia +x) queda dentro
+# del mango y el otro extremo (z 290) sale por atrás. Se empuja la varilla hasta que el gancho pasa la segunda cortical,
+# se inclina apenas hacia el lado del gancho (dentro del orificio de Φ4) y se tira hasta que el gancho se apoya afuera
+# de la segunda cortical: el extremo de la varilla queda frente a la escala de la ventana. No se escribe ninguna lectura.
+GAUGE_CONTACT = 0.0005       # z del mango donde su chaflán mide Φ4
+HOOK_FACE = 0.13125          # cara del gancho que se apoya en la cortical
+HOOK_PAST = 0.002            # el gancho pasa 2 mm la cortical antes de engancharse
+
+
+def medidor_distal(g, mango_stl, gancho_stl):
+    nodes = g.doc["nodes"]
+    idx = {n["name"]: k for k, n in enumerate(nodes)}
+    freeze_final(g)
+    clip = g.doc["animations"][0]
+    conj = idx["Clavo_cefalomedular_conjunto"]
+    Mc = world_matrix(g, conj)
+    o, d = np.array([-0.1, 0.0, GUIDE_Z]), np.array([1.0, 0.0, 0.0])
+    fem = idx["Femur_derecho"]
+    outer = ray_hits(g, fem, np.linalg.inv(Mc) @ world_matrix(g, fem), o, d) - 0.1
+    cort1_out, cort2_out = outer[0], outer[-1]
+    bone_x = cort1_out
+    T = 34.0
+    fps = 30
+    t = np.arange(0, T + 1e-9, 1 / fps)
+    ease = lambda a, b: smooth((t - a) / (b - a))
+    hide_after = lambda a: np.where((t < a)[:, None], 1.0, TINY) * np.ones((len(t), 3))
+    tracks = []
+    # 1) El perforador sale por el eje con la broca y el tope (1-6 s), se aparta y deja de verse.
+    perf = idx["Perforador_quirurgico"]
+    Wi = world_matrix(g, idx["Instrumental"])
+    axis = (np.linalg.inv(Wi) @ Mc)[:3, :3] @ d
+    side = (np.linalg.inv(Wi) @ Mc)[:3, :3] @ np.array([0.0, 1.0, 0.0])
+    p0 = np.array(nodes[perf]["translation"], float)
+    tracks.append((perf, "translation", p0 - (0.27 * ease(1.0, 6.0))[:, None] * axis[None, :]
+                   + (0.12 * ease(6.0, 7.5))[:, None] * side[None, :], "LINEAR"))
+    tracks.append((perf, "scale", hide_after(7.6), "STEP"))
+    # 2) La guía intermedia sale por su eje (8,5-12,5 s) sin mover el manguito exterior, y deja de verse.
+    mid = idx["Guia_intermedia_distal"]
+    m0 = np.array(nodes[mid]["translation"], float)
+    tracks.append((mid, "translation", m0 - (0.22 * ease(8.5, 12.5))[:, None] * d[None, :], "LINEAR"))
+    tracks.append((mid, "scale", hide_after(12.6), "STEP"))
+    # 3) El medidor armado aparece en el eje, afuera, y entra por el manguito exterior hasta apoyar la punta en el
+    #    borde del orificio (14-19 s).
+    q = [0.0, -np.sin(np.pi / 4), 0.0, np.cos(np.pi / 4)]          # z del medidor -> -x del clavo (hacia afuera)
+    handle = len(nodes)
+    nodes.append({"name": "Medidor_tornillo_cortical_mango",
+                  "mesh": stl_mesh(g, mango_stl, "Medidor_tornillo_cortical_mango", [0.78, 0.79, 0.82, 1.0]),
+                  "rotation": q, "scale": [TINY] * 3, "children": [handle + 1]})
+    nodes.append({"name": "Medidor_tornillo_cortical_gancho",
+                  "mesh": stl_mesh(g, gancho_stl, "Medidor_tornillo_cortical_gancho", [0.55, 0.57, 0.62, 1.0])})
+    rod = handle + 1
+    nodes[conj]["children"].append(handle)
+    rest_x = bone_x + GAUGE_CONTACT                            # origen del mango con la punta apoyada en el hueso
+    hx = rest_x - 0.24 * (1 - ease(14.0, 19.0))
+    tracks.append((handle, "translation", np.c_[hx, np.zeros(len(t)), np.full(len(t), GUIDE_Z)], "LINEAR"))
+    tracks.append((handle, "scale", np.where((t >= 13.5)[:, None], 1.0, TINY) * np.ones((len(t), 3)), "STEP"))
+    # 4) La varilla avanza (20-26 s) hasta que el gancho pasa la segunda cortical, se inclina hacia su lado (26-27 s) y
+    #    se tira hasta apoyar el gancho (27-28,5 s).
+    z_far = rest_x - cort2_out                                 # segunda cortical (afuera) en z del mango
+    dz_end = z_far - HOOK_FACE
+    dz = (dz_end - HOOK_PAST) * ease(20.0, 26.0) + HOOK_PAST * ease(27.0, 28.5)
+    pivot_z = 0.166                                            # se inclina en el canal de atrás del mango
+    lean = 0.0012                                              # el gancho se corre 1,2 mm hacia el borde del orificio
+    # Giro sobre y: un punto adelante del pivote (z menor) se corre (z - pivote)·sen(a) en x; negativo = hacia +x.
+    tilt = -np.arctan(lean / (pivot_z - (HOOK_FACE + dz_end))) * ease(26.0, 27.0)
+    qs = np.array([[0.0, np.sin(a / 2), 0.0, np.cos(a / 2)] for a in tilt])
+    cpiv = np.array([0.0, 0.0, pivot_z])
+    piv = np.array([cpiv - quat_matrix(q_) @ cpiv for q_ in qs])
+    tracks.append((rod, "translation", piv + np.c_[np.zeros(len(t)), np.zeros(len(t)), dz], "LINEAR"))
+    tracks.append((rod, "rotation", qs, "LINEAR"))
+    new_input = g.append(t[:, None], "SCALAR")
+    clip["channels"], clip["samplers"] = [], []
+    for node, path, values, interp in tracks:
+        clip["samplers"].append({"input": new_input, "output": g.append(values, "VEC4" if path == "rotation" else "VEC3"),
+                                 "interpolation": interp})
+        clip["channels"].append({"sampler": len(clip["samplers"]) - 1, "target": {"node": node, "path": path}})
+    clip["name"] = "Paso7_6_retiro_de_broca_y_guia_intermedia_y_medidor"
+    print(f"7.6: perforador fuera 1-7,5 s; guía intermedia fuera 8,5-12,5 s; medidor entra 14-19 s; gancho pasa la "
+          f"segunda cortical 20-26 s y se apoya 27-28,5 s. Distancia entre corticales por fuera: "
+          f"{(cort2_out - cort1_out)*1000:.1f} mm (no se muestra como lectura); dura {T:.0f} s")
+
+
 if __name__ == "__main__":
     action, src, dst = sys.argv[1:4]
+    if action == "medidor_distal":           # paso 7.6, a partir del 7.5 ya ajustado (tmp-a22)
+        glb = Glb(src)
+        medidor_distal(glb, sys.argv[4], sys.argv[5])
+        glb.save(dst)
+        sys.exit()
     if action == "perforacion_final":        # paso 7.5, a partir del 7.4 ya ajustado (tmp-a21)
         glb = Glb(src)
         perforacion_final(glb)
