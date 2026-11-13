@@ -2051,11 +2051,13 @@ def guias_distales(g, ext_stl, mid_stl, troc_stl):
 # la broca se monta igual que la broca cortical (entra en el portabrocas y la llave en T lo aprieta) y el conjunto
 # avanza por el eje de las guías hasta la cortical lateral.
 # Antes de montarla se le pone el tope (Tope_broca_4mm_cuerpo/tornillo_fijacion.stl, mm: anillo Φ13 x 10 mm con canal
-# de Φ4,1 y tornillo de fijación radial en x, z 3-7 mm): entra por la punta y se fija con el tornillo donde hace que,
-# cuando su cara delantera se apoya en la entrada de la guía intermedia, la punta quede DISTAL_SHORT antes de la segunda
-# cortical. Luego la broca perfora girando la primera cortical y se detiene en el tope (no toca la segunda cortical).
+# de Φ4,1 y tornillo de fijación radial en x, z 3-7 mm): entra por la punta y se fija con el tornillo lejos de la guía
+# (todavía no limita nada). La broca perfora girando la primera cortical y se detiene DISTAL_SHORT antes de la segunda
+# cortical; el tope queda entonces STOP_GAP_73 antes de la entrada de la guía intermedia. En el 7.4 se ajusta a 1 cm.
 DISTAL_BIT_LENGTH = 0.300
 DISTAL_SHORT = 0.003
+STOP_GAP_73 = 0.020
+STOP_GAP_74 = 0.010
 PERF_PARTS = ("Portabrocas_malla", "Llave_malla", "Nariz", "Cabezal", "Carcasa_empunadura", "Gatillo", "Bateria")
 
 
@@ -2101,7 +2103,7 @@ def broca_distal(g, drill_stl, perf_source, key_source, stop_body_stl, stop_scre
     nail_hits = ray_hits(g, idx["Clavo_malla"], np.linalg.inv(Mc) @ world_matrix(g, idx["Clavo_malla"]), o, d)
     cort1_out, cort1_in, cort2_in = outer[0], inner[0], inner[-1]
     end_x = cort2_in - DISTAL_SHORT                            # donde se detiene la punta
-    stop_z = end_x - head_x                                    # cara delantera del tope, desde la punta de la broca
+    stop_z = end_x - head_x + STOP_GAP_73                      # cara delantera del tope, desde la punta de la broca
     print(f"   primera cortical {cort1_out*1000:.1f} a {cort1_in*1000:.1f} mm; segunda cortical desde {cort2_in*1000:.1f} mm; "
           f"la punta para en {end_x*1000:.1f} mm; tope a {stop_z*1000:.1f} mm de la punta; "
           f"cortes con el clavo: {len(nail_hits)} (pasa por el orificio)")
@@ -2150,7 +2152,7 @@ def broca_distal(g, drill_stl, perf_source, key_source, stop_body_stl, stop_scre
     cv = cv @ L_chuck[:3, :3].T + L_chuck[:3, 3]              # en el perforador
     s_front = ((cv - (A[:3, 3] + DISTAL_BIT_LENGTH * (A[:3, :3] @ [0, 0, 1]))) @ dir_p).max()
     gap = (end_x - DISTAL_BIT_LENGTH + s_front)
-    stop_back = head_x - 0.010                                 # cara trasera del tope, apoyado en la guía
+    stop_back = head_x - STOP_GAP_73 - 0.010                   # cara trasera del tope al final del 7.3
     print(f"   entrada de la guía intermedia x = {head_x*1000:.1f} mm; con la broca al fondo, nariz del portabrocas "
           f"x = {gap*1000:.1f} mm (espacio hasta el tope {(stop_back - gap)*1000:.1f} mm)")
     assert stop_back - gap > 0.005, "el portabrocas chocaría con el tope"
@@ -2257,8 +2259,108 @@ def broca_distal(g, drill_stl, perf_source, key_source, stop_body_stl, stop_scre
           f"al eje {a:.1f}-{a + 3:.1f} s; por las guías {b:.1f}-{b + 8:.1f} s; perfora {c:.1f}-{c + 7:.1f} s; dura {T:.0f} s")
 
 
+# ---------- Paso 7.4: ajuste del tope a 1 cm de la guía ----------
+# Parte del final del 7.3 (broca quieta, punta DISTAL_SHORT antes de la segunda cortical, tope STOP_GAP_73 antes de la
+# guía intermedia). Se afloja el tornillo de fijación, el tope se corre hacia la punta hasta quedar a STOP_GAP_74 (1 cm)
+# de la entrada de la guía y se vuelve a apretar. La broca no se mueve; la perforación sigue en el 7.5.
+def ajuste_tope(g):
+    nodes = g.doc["nodes"]
+    idx = {n["name"]: k for k, n in enumerate(nodes)}
+    freeze_final(g)
+    clip = g.doc["animations"][0]
+    collar, screw = idx["Tope_broca_4mm"], idx["Tornillo_del_tope"]
+    z0 = nodes[collar]["translation"][2]
+    z1 = z0 - (STOP_GAP_73 - STOP_GAP_74)                      # más cerca de la punta
+    T = 12.0
+    fps = 30
+    t = np.arange(0, T + 1e-9, 1 / fps)
+    ease = lambda a, b: smooth((t - a) / (b - a))
+    tracks = []
+    tighten = 1 - ease(1.0, 2.5) + ease(7.0, 8.5)              # se afloja, se corre y se vuelve a apretar
+    ang = (tighten - 1) * 3 * 2 * np.pi
+    qs = np.array([[np.sin(x / 2), 0.0, 0.0, np.cos(x / 2)] for x in ang])
+    c = np.array([0.0, 0.0, 0.005])
+    pivot = np.array([c - quat_matrix(q_) @ c for q_ in qs])
+    tracks.append((screw, "translation", pivot + np.c_[0.0015 * (1 - tighten), np.zeros(len(t)), np.zeros(len(t))], "LINEAR"))
+    tracks.append((screw, "rotation", qs, "LINEAR"))
+    zc = z0 + (z1 - z0) * ease(3.0, 6.5)
+    tracks.append((collar, "translation", np.c_[np.zeros(len(t)), np.zeros(len(t)), zc], "LINEAR"))
+    new_input = g.append(t[:, None], "SCALAR")
+    clip["channels"], clip["samplers"] = [], []
+    for node, path, values, interp in tracks:
+        clip["samplers"].append({"input": new_input, "output": g.append(values, "VEC4" if path == "rotation" else "VEC3"),
+                                 "interpolation": interp})
+        clip["channels"].append({"sampler": len(clip["samplers"]) - 1, "target": {"node": node, "path": path}})
+    clip["name"] = "Paso7_4_ajuste_del_tope_a_1cm"
+    print(f"7.4: tornillo flojo 1-2,5 s; tope se corre {(z0 - z1)*1000:.0f} mm (de {STOP_GAP_73*1000:.0f} a "
+          f"{STOP_GAP_74*1000:.0f} mm de la guía) 3-6,5 s; se aprieta 7-8,5 s; dura {T:.0f} s")
+
+
+# ---------- Paso 7.5: perforación de la segunda cortical hasta el tope ----------
+# Parte del final del 7.4: la broca gira y avanza por el mismo eje STOP_GAP_74 (1 cm) hasta que el tope se apoya en la
+# entrada de la guía intermedia. La perforación de la segunda cortical se marca detrás de la punta.
+def perforacion_final(g):
+    nodes = g.doc["nodes"]
+    idx = {n["name"]: k for k, n in enumerate(nodes)}
+    freeze_final(g)
+    clip = g.doc["animations"][0]
+    conj = idx["Clavo_cefalomedular_conjunto"]
+    Mc = world_matrix(g, conj)
+    o, d = np.array([-0.1, 0.0, GUIDE_Z]), np.array([1.0, 0.0, 0.0])
+    can = idx["Canal_medular_esquematico"]
+    inner = ray_hits(g, can, np.linalg.inv(Mc) @ world_matrix(g, can), o, d) - 0.1
+    fem = idx["Femur_derecho"]
+    outer = ray_hits(g, fem, np.linalg.inv(Mc) @ world_matrix(g, fem), o, d) - 0.1
+    cort2_in, cort2_out = inner[-1], outer[-1]
+    start = cort2_in - DISTAL_SHORT
+    end = start + STOP_GAP_74
+    perf, bit = idx["Perforador_quirurgico"], idx["Broca_4mm_bloqueo_distal"]
+    Wi = world_matrix(g, idx["Instrumental"])
+    axis = (np.linalg.inv(Wi) @ Mc)[:3, :3] @ d                # eje de las guías en el marco del perforador
+    p0 = np.array(nodes[perf]["translation"], float)
+    T = 14.0
+    fps = 30
+    t = np.arange(0, T + 1e-9, 1 / fps)
+    adv = np.clip((t - 2.0) / 8.0, 0, 1)                       # avance parejo, 2-10 s
+    tracks = [(perf, "translation", p0 + (adv * STOP_GAP_74)[:, None] * axis[None, :], "LINEAR")]
+    q0 = np.array(nodes[bit]["rotation"], float)
+    spin = np.clip((t - 1.5) / 9.0, 0, 1) * 2 * np.pi * 18
+    tracks.append((bit, "rotation", np.array([quat_mul(q0, np.array([[0, 0, np.sin(x / 2), np.cos(x / 2)]]))[0] for x in spin]), "LINEAR"))
+    tip = start + adv * STOP_GAP_74
+    depth = cort2_out - cort2_in
+    cut = np.clip((tip - cort2_in) / depth, 0, 1)
+    src_hole = nodes[idx["Perforacion_primera_cortical_distal"]]
+    mesh = g.doc["meshes"][src_hole["mesh"]]
+    # Mismo tubo que la primera cortical, escalado al grosor de la segunda.
+    k = depth / max(g.doc["accessors"][mesh["primitives"][0]["attributes"]["POSITION"]]["max"][2], 1e-6)
+    nodes.append({"name": "Perforacion_segunda_cortical_distal", "mesh": src_hole["mesh"],
+                  "translation": [cort2_in, 0.0, GUIDE_Z], "rotation": src_hole["rotation"], "scale": [TINY] * 3})
+    hole = len(nodes) - 1
+    nodes[conj]["children"].append(hole)
+    tracks.append((hole, "scale", np.where((cut > 0.02)[:, None], np.c_[np.ones(len(t)), np.ones(len(t)), np.maximum(cut * k, TINY)], TINY), "LINEAR"))
+    new_input = g.append(t[:, None], "SCALAR")
+    clip["channels"], clip["samplers"] = [], []
+    for node, path, values, interp in tracks:
+        clip["samplers"].append({"input": new_input, "output": g.append(values, "VEC4" if path == "rotation" else "VEC3"),
+                                 "interpolation": interp})
+        clip["channels"].append({"sampler": len(clip["samplers"]) - 1, "target": {"node": node, "path": path}})
+    clip["name"] = "Paso7_5_perforacion_de_la_segunda_cortical"
+    print(f"7.5: segunda cortical {cort2_in*1000:.1f} a {cort2_out*1000:.1f} mm; la punta va de {start*1000:.1f} a "
+          f"{end*1000:.1f} mm (2-10 s) y el tope se apoya en la guía; dura {T:.0f} s")
+
+
 if __name__ == "__main__":
     action, src, dst = sys.argv[1:4]
+    if action == "perforacion_final":        # paso 7.5, a partir del 7.4 ya ajustado (tmp-a21)
+        glb = Glb(src)
+        perforacion_final(glb)
+        glb.save(dst)
+        sys.exit()
+    if action == "ajuste_tope":              # paso 7.4, a partir del 7.3 ya ajustado (tmp-a20)
+        glb = Glb(src)
+        ajuste_tope(glb)
+        glb.save(dst)
+        sys.exit()
     if action == "broca_distal":             # paso 7.3, a partir del 7.2 ya ajustado (tmp-a19)
         glb = Glb(src)
         broca_distal(glb, *sys.argv[4:9])
