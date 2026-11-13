@@ -594,9 +594,9 @@ const ESCENAS = {
     const camera = perspective([0.75, 2.5, 3.5], [0.02, 0.8, 0], { fov: 31 });
     render(scene, camera);
     const p = projector(camera);
-    title('Paciente en posición supina', 'Boca arriba, en una mesa ortopédica de tracción.');
+    title('Paciente en posición supina', 'Boca arriba, en una mesa de tracción.');
     callout(p([-0.32, BODY_Y + 0.14, 0]), 560, 245, 'Boca arriba');
-    callout(p([-0.32, 0.6, 0.15]), 200, 800, ['Mesa ortopédica', 'de tracción'], { color: C.orange });
+    callout(p([-0.32, 0.6, 0.15]), 200, 800, ['Mesa de tracción'], { color: C.orange });
     note();
   },
   '1-2-intensificador'() {

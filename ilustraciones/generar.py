@@ -162,11 +162,11 @@ def scene_1_1():
     return (
         table_side(highlight=True) + patient_side()
         + text(96, 110, "Paciente en posición supina", 42, WHITE, 600)
-        + text(96, 164, "Boca arriba, en una mesa ortopédica de tracción.", 32, MUTED, 400)
+        + text(96, 164, "Boca arriba, en una mesa de tracción.", 32, MUTED, 400)
         + arrow(520, 400, 520, 520, WHITE, 5)
         + text(540, 420, "Boca arriba", 32, WHITE, 500)
         + line(1100, 712, 1100, 790, ORANGE, 2.5) + dot(1100, 712, 7, ORANGE)
-        + text(860, 830, "Mesa ortopédica de tracción", 32, ORANGE, 500)
+        + text(860, 830, "Mesa de tracción", 32, ORANGE, 500)
         + chip(860, 852, "No hace parte del set")
         + note()
     )

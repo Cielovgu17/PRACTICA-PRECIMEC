@@ -42,7 +42,7 @@ def note(w, h, anchor="end"):
 SCENES = {
     "1-1-posicion-supina": ("1-1-posicion-supina-v3.png", (1600, 1143), lambda w, h: (
         pointer(608, 380, 890, 222) + text(900, 214, ["Paciente boca arriba", "(posición supina)"], 36)
-        + pointer(560, 868, 380, 948, ORANGE) + text(90, 960, ["Mesa ortopédica", "de tracción"], 36, ORANGE)
+        + pointer(560, 868, 380, 948, ORANGE) + text(90, 960, "Mesa de tracción", 36, ORANGE)
         + note(w, h)
     )),
     "1-2-intensificador": ("1-2-intensificador-v3.png", (1600, 1143), lambda w, h: (
