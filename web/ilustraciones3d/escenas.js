@@ -1043,7 +1043,7 @@ const ESCENAS = {
     const camera = perspective([vertex.x + 0.075, vertex.y + 0.015, 0.92], [vertex.x + 0.075, vertex.y - 0.01, 0], { fov: 34 });
     render(scene, camera);
     const p = projector(camera);
-    title('Hacer la incisión', 'De 5 a 6 cm en dirección proximal, a partir del vértice del trocánter mayor.');
+    title('Asistir la incisión','De 5 a 6 cm en dirección proximal, a partir del vértice del trocánter mayor.');
     const s = p(start);
     const e = p(end);
     add('line', { x1: e[0], y1: s[1] + 46, x2: s[0], y2: s[1] + 46, stroke: C.white, 'stroke-width': 3 });
