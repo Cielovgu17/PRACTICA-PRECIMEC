@@ -2263,7 +2263,7 @@ def broca_distal(g, drill_stl, perf_source, key_source, stop_body_stl, stop_scre
 # Parte del final del 7.3 (broca quieta, punta DISTAL_SHORT antes de la segunda cortical, tope STOP_GAP_73 antes de la
 # guía intermedia). Se afloja el tornillo de fijación, el tope se corre hacia la punta hasta quedar a STOP_GAP_74 (1 cm)
 # de la entrada de la guía y se vuelve a apretar. La broca no se mueve; la perforación sigue en el 7.5.
-def ajuste_tope(g):
+def ajuste_tope(g, key_stl):
     nodes = g.doc["nodes"]
     idx = {n["name"]: k for k, n in enumerate(nodes)}
     freeze_final(g)
@@ -2276,14 +2276,32 @@ def ajuste_tope(g):
     t = np.arange(0, T + 1e-9, 1 / fps)
     ease = lambda a, b: smooth((t - a) / (b - a))
     tracks = []
-    tighten = 1 - ease(1.0, 2.5) + ease(7.0, 8.5)              # se afloja, se corre y se vuelve a apretar
-    ang = (tighten - 1) * 3 * 2 * np.pi
+    # Llave en L (Llave_ajuste_L_tope_4mm.stl, ya en el marco del tope: su brazo corto, hexagonal, va por el eje del
+    # tornillo, x, a z 5 mm, con la punta en x 4,2 mm dentro del tornillo). Entra, afloja, acompaña al tope mientras se
+    # corre, aprieta y sale.
+    # Media vuelta para aflojar y media para apretar: con el brazo largo (42 mm) siempre del lado de la guía, que tiene
+    # espacio; una vuelta entera lo haría pasar por el portabrocas.
+    tighten = 1 - ease(1.8, 3.3) + ease(7.8, 9.3)              # se afloja, se corre y se vuelve a apretar
+    ang = (tighten - 1) * np.pi
     qs = np.array([[np.sin(x / 2), 0.0, 0.0, np.cos(x / 2)] for x in ang])
     c = np.array([0.0, 0.0, 0.005])
     pivot = np.array([c - quat_matrix(q_) @ c for q_ in qs])
-    tracks.append((screw, "translation", pivot + np.c_[0.0015 * (1 - tighten), np.zeros(len(t)), np.zeros(len(t))], "LINEAR"))
+    out = 0.0005 * (1 - tighten)                               # el tornillo sale 0,5 mm al aflojarse
+    tracks.append((screw, "translation", pivot + np.c_[out, np.zeros(len(t)), np.zeros(len(t))], "LINEAR"))
     tracks.append((screw, "rotation", qs, "LINEAR"))
-    zc = z0 + (z1 - z0) * ease(3.0, 6.5)
+    key = len(nodes)
+    nodes.append({"name": "Llave_en_L_del_tope", "mesh": stl_mesh(g, key_stl, "Llave_en_L_del_tope", [0.30, 0.31, 0.34, 1.0]),
+                  "scale": [TINY] * 3})
+    nodes[collar].setdefault("children", []).append(key)
+    reach = 0.015 * ((1 - ease(0.5, 1.5)) + ease(9.6, 10.6))   # entra 15 mm por el eje del tornillo y luego sale
+    # El brazo largo del modelo apunta a -z (hacia la punta); se gira +90° para que en todo el recorrido (de +90° a -90°)
+    # quede del lado de la guía y nunca hacia el portabrocas.
+    kq = np.array([[np.sin((x + np.pi / 2) / 2), 0.0, 0.0, np.cos((x + np.pi / 2) / 2)] for x in ang])
+    kpivot = np.array([c - quat_matrix(q_) @ c for q_ in kq])
+    tracks.append((key, "translation", kpivot + np.c_[out + reach, np.zeros(len(t)), np.zeros(len(t))], "LINEAR"))
+    tracks.append((key, "rotation", kq, "LINEAR"))
+    tracks.append((key, "scale", np.where(((t >= 0.3) & (t <= 10.8))[:, None], 1.0, TINY) * np.ones((len(t), 3)), "STEP"))
+    zc = z0 + (z1 - z0) * ease(3.8, 7.3)
     tracks.append((collar, "translation", np.c_[np.zeros(len(t)), np.zeros(len(t)), zc], "LINEAR"))
     new_input = g.append(t[:, None], "SCALAR")
     clip["channels"], clip["samplers"] = [], []
@@ -2292,8 +2310,9 @@ def ajuste_tope(g):
                                  "interpolation": interp})
         clip["channels"].append({"sampler": len(clip["samplers"]) - 1, "target": {"node": node, "path": path}})
     clip["name"] = "Paso7_4_ajuste_del_tope_a_1cm"
-    print(f"7.4: tornillo flojo 1-2,5 s; tope se corre {(z0 - z1)*1000:.0f} mm (de {STOP_GAP_73*1000:.0f} a "
-          f"{STOP_GAP_74*1000:.0f} mm de la guía) 3-6,5 s; se aprieta 7-8,5 s; dura {T:.0f} s")
+    print(f"7.4: llave en L entra 0,5-1,5 s; afloja 1,8-3,3 s; tope se corre {(z0 - z1)*1000:.0f} mm (de "
+          f"{STOP_GAP_73*1000:.0f} a {STOP_GAP_74*1000:.0f} mm de la guía) 3,8-7,3 s; aprieta 7,8-9,3 s; sale 9,6-10,6 s; "
+          f"dura {T:.0f} s")
 
 
 # ---------- Paso 7.5: perforación de la segunda cortical hasta el tope ----------
@@ -2358,7 +2377,7 @@ if __name__ == "__main__":
         sys.exit()
     if action == "ajuste_tope":              # paso 7.4, a partir del 7.3 ya ajustado (tmp-a20)
         glb = Glb(src)
-        ajuste_tope(glb)
+        ajuste_tope(glb, sys.argv[4])
         glb.save(dst)
         sys.exit()
     if action == "broca_distal":             # paso 7.3, a partir del 7.2 ya ajustado (tmp-a19)
