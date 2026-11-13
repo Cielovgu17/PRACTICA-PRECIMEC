@@ -79,18 +79,33 @@ export async function createEditing({ refresh, getViewer }) {
     );
   }
 
-  // Un campo de texto que se guarda solo al salir de él.
+  // Un campo de texto que se guarda solo al salir de él. Si no se puede guardar, el texto escrito o pegado
+  // se queda en el campo (no se pierde) y debajo se explica por qué.
   function textInput(id, label, value, onSave, { multiline = false, required = false } = {}) {
     const input = multiline
       ? h('textarea', { class: 'textarea', id, rows: 3 }, value)
       : h('input', { class: 'input', id, value, required, maxlength: 200 });
-    let lastSaved = value;
+    const problem = h('p', { class: 'form-error', id: `${id}-error`, role: 'alert', hidden: true });
+    // El cuadro crece con el texto, para que un texto largo pegado se vea completo.
+    const grow = () => {
+      if (!multiline) return;
+      input.style.height = 'auto';
+      // Hasta un 60 % de la pantalla; si el texto es más largo, el cuadro se desplaza por dentro.
+      input.style.height = `${Math.min(input.scrollHeight + 2, window.innerHeight * 0.6)}px`;
+    };
+    input.addEventListener('input', grow);
+    requestAnimationFrame(grow);
     input.addEventListener('change', async () => {
       const ok = await save(() => onSave(input.value));
-      if (ok) lastSaved = input.value;
-      else input.value = lastSaved;
+      problem.hidden = ok;
+      if (ok) input.removeAttribute('aria-invalid');
+      else {
+        input.setAttribute('aria-invalid', 'true');
+        input.setAttribute('aria-describedby', problem.id);
+        problem.textContent = 'Este texto no se guardó. Revisa el aviso, corrígelo y vuelve a salir del cuadro para guardarlo.';
+      }
     });
-    return h('div', { class: 'field' }, h('label', { for: id }, label), input);
+    return h('div', { class: 'field' }, h('label', { for: id }, label), input, problem);
   }
 
   function techniqueForm() {

@@ -11,7 +11,7 @@ from .errors import ApiError
 STEP_FIELDS = ("title", "objective", "description", "procedure", "observations", "recommendations")
 INSTRUMENT_FIELDS = ("name", "description", "function")
 TECHNIQUE_FIELDS = ("company", "platform_name", "name", "intro", "system_info")
-MAX_TEXT = 20000
+MAX_TEXT = 200000  # textos largos pegados de otro documento (unas 60 páginas)
 MAX_TITLE = 200
 
 
