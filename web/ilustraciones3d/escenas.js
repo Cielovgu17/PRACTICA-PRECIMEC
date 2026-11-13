@@ -812,9 +812,12 @@ const ESCENAS = {
       floorAndLights(scene, { key: [dir.x + 0.3, 1.5, dir.z + 0.3], span: 1, floorY: -2 });
       scene.add(gltf.scene.clone());
       const cam = new THREE.PerspectiveCamera(20, 800 / 1000, 0.01, 10);
-      cam.position.copy(c).addScaledVector(dir, Number(params.get('dist') || 0.9));
+      // mx, my: corren el encuadre (en metros) hacia la derecha y hacia arriba de cada vista, para revisar detalles.
+      const right = new THREE.Vector3().crossVectors(up, dir).normalize();
+      const look = c.clone().addScaledVector(right, Number(params.get('mx') || 0)).addScaledVector(up, Number(params.get('my') || 0));
+      cam.position.copy(look).addScaledVector(dir, Number(params.get('dist') || 0.9));
       cam.up.copy(up);
-      cam.lookAt(c);
+      cam.lookAt(look);
       cam.updateMatrixWorld();
       render(scene, cam, { x: i * 800, y: 0, w: 800, h: 1000 });
       label(i * 800 + 24, 48, name, { size: 30, weight: 600 });

@@ -2049,12 +2049,37 @@ def guias_distales(g, ext_stl, mid_stl, troc_stl):
 # extremo con plano (278-300 mm) que va dentro del portabrocas. La guía intermedia nueva (E30-3-190-12) tiene canal
 # de Φ4,1 mm, así que la broca de Φ4 pasa por ella. El perforador, su portabrocas y la llave en T son los mismos del 6.5:
 # la broca se monta igual que la broca cortical (entra en el portabrocas y la llave en T lo aprieta) y el conjunto
-# avanza por el eje de las guías hasta que la punta toca la cortical lateral. No perfora todavía.
+# avanza por el eje de las guías hasta la cortical lateral.
+# Antes de montarla se le pone el tope (Tope_broca_4mm_cuerpo/tornillo_fijacion.stl, mm: anillo Φ13 x 10 mm con canal
+# de Φ4,1 y tornillo de fijación radial en x, z 3-7 mm): entra por la punta y se fija con el tornillo donde hace que,
+# cuando su cara delantera se apoya en la entrada de la guía intermedia, la punta quede DISTAL_SHORT antes de la segunda
+# cortical. Luego la broca perfora girando la primera cortical y se detiene en el tope (no toca la segunda cortical).
 DISTAL_BIT_LENGTH = 0.300
+DISTAL_SHORT = 0.003
 PERF_PARTS = ("Portabrocas_malla", "Llave_malla", "Nariz", "Cabezal", "Carcasa_empunadura", "Gatillo", "Bateria")
 
 
-def broca_distal(g, drill_stl, perf_source, key_source):
+def ray_hits(g, index, M, origin, direction):
+    """Distancias a lo largo de la recta donde corta la malla del nodo (M lleva la malla al marco de la recta)."""
+    out = []
+    for p in g.doc["meshes"][g.doc["nodes"][index]["mesh"]]["primitives"]:
+        v = g.array(p["attributes"]["POSITION"]).astype(float) @ M[:3, :3].T + M[:3, 3]
+        T = v[read_any(g, p["indices"])[0].astype(np.int64).reshape(-1, 3)]
+        e1, e2 = T[:, 1] - T[:, 0], T[:, 2] - T[:, 0]
+        pv = np.cross(direction, e2)
+        det = (e1 * pv).sum(1)
+        ok = np.abs(det) > 1e-12
+        inv = np.where(ok, 1 / np.where(ok, det, 1), 0)
+        s = origin - T[:, 0]
+        u = (s * pv).sum(1) * inv
+        qv = np.cross(s, e1)
+        w = (direction * qv).sum(1) * inv
+        d = (e2 * qv).sum(1) * inv
+        out.append(d[ok & (u >= 0) & (w >= 0) & (u + w <= 1)])
+    return np.sort(np.concatenate(out))
+
+
+def broca_distal(g, drill_stl, perf_source, key_source, stop_body_stl, stop_screw_stl):
     nodes = g.doc["nodes"]
     idx = {n["name"]: k for k, n in enumerate(nodes)}
     old = freeze_final(g)
@@ -2069,6 +2094,18 @@ def broca_distal(g, drill_stl, perf_source, key_source):
     bone_x = fv[np.hypot(fv[:, 1], fv[:, 2] - GUIDE_Z) < 0.0015][:, 0].min()
     base_x = bone_x - (GUIDE_TROCAR_TIP + GUIDE_NEST["trocar"])
     head_x = base_x + GUIDE_NEST["intermedia"]                 # entrada de la guía intermedia (la más afuera)
+    # Corticales sobre el eje: superficie del fémur (afuera) y canal medular (adentro).
+    o, d = np.array([-0.1, 0.0, GUIDE_Z]), np.array([1.0, 0.0, 0.0])
+    outer = ray_hits(g, fem, Mf, o, d) - 0.1
+    inner = ray_hits(g, idx["Canal_medular_esquematico"], np.linalg.inv(Mc) @ world_matrix(g, idx["Canal_medular_esquematico"]), o, d) - 0.1
+    nail_hits = ray_hits(g, idx["Clavo_malla"], np.linalg.inv(Mc) @ world_matrix(g, idx["Clavo_malla"]), o, d)
+    cort1_out, cort1_in, cort2_in = outer[0], inner[0], inner[-1]
+    end_x = cort2_in - DISTAL_SHORT                            # donde se detiene la punta
+    stop_z = end_x - head_x                                    # cara delantera del tope, desde la punta de la broca
+    print(f"   primera cortical {cort1_out*1000:.1f} a {cort1_in*1000:.1f} mm; segunda cortical desde {cort2_in*1000:.1f} mm; "
+          f"la punta para en {end_x*1000:.1f} mm; tope a {stop_z*1000:.1f} mm de la punta; "
+          f"cortes con el clavo: {len(nail_hits)} (pasa por el orificio)")
+    assert len(nail_hits) == 0, "la broca tocaría el clavo"
     # 1) Vuelven las mallas del perforador, el portabrocas y la llave (se quitaron del archivo en el 7.1).
     for name in PERF_PARTS:
         nodes[idx[name]]["mesh"] = copy_node_mesh(g, perf_source, name)
@@ -2112,11 +2149,19 @@ def broca_distal(g, drill_stl, perf_source, key_source):
     cv = cv @ Lm[:3, :3].T + Lm[:3, 3]
     cv = cv @ L_chuck[:3, :3].T + L_chuck[:3, 3]              # en el perforador
     s_front = ((cv - (A[:3, 3] + DISTAL_BIT_LENGTH * (A[:3, :3] @ [0, 0, 1]))) @ dir_p).max()
-    gap = (bone_x - DISTAL_BIT_LENGTH + s_front)
-    print(f"   cortical x = {bone_x*1000:.1f} mm; entrada de la guía intermedia x = {head_x*1000:.1f} mm; "
-          f"nariz del portabrocas x = {gap*1000:.1f} mm (espacio {(head_x - gap)*1000:.1f} mm)")
-    assert head_x - gap > 0.005, "el portabrocas chocaría con la cabeza de las guías"
-    T = 40.0
+    gap = (end_x - DISTAL_BIT_LENGTH + s_front)
+    stop_back = head_x - 0.010                                 # cara trasera del tope, apoyado en la guía
+    print(f"   entrada de la guía intermedia x = {head_x*1000:.1f} mm; con la broca al fondo, nariz del portabrocas "
+          f"x = {gap*1000:.1f} mm (espacio hasta el tope {(stop_back - gap)*1000:.1f} mm)")
+    assert stop_back - gap > 0.005, "el portabrocas chocaría con el tope"
+    # Tope: hijo de la broca (gira con ella); el tornillo de fijación es hijo del tope.
+    collar = len(nodes)
+    nodes.append({"name": "Tope_broca_4mm", "mesh": stl_mesh(g, stop_body_stl, "Tope_broca_4mm", [0.72, 0.74, 0.78, 1.0]),
+                  "translation": [0.0, 0.0, stop_z], "scale": [TINY] * 3, "children": [collar + 1]})
+    nodes.append({"name": "Tornillo_del_tope", "mesh": stl_mesh(g, stop_screw_stl, "Tornillo_del_tope", [0.35, 0.36, 0.40, 1.0])})
+    nodes[bit].setdefault("children", []).append(collar)
+    screw = collar + 1
+    T = 46.0
     fps = 30
     t = np.arange(0, T + 1e-9, 1 / fps)
     ease = lambda a, b: smooth((t - a) / (b - a))
@@ -2127,11 +2172,24 @@ def broca_distal(g, drill_stl, perf_source, key_source):
     x_t = base_x + GUIDE_NEST["trocar"] - 0.230 * ease(1.0, 6.0)
     tracks.append((troc, "translation", np.c_[x_t, np.zeros(len(t)), np.full(len(t), GUIDE_Z)], "LINEAR"))
     tracks.append((troc, "scale", np.where((t < 6.8)[:, None], 1.0, TINY) * np.ones((len(t), 3)), "STEP"))
-    # 5) El perforador aparece a un lado; la broca entra en su portabrocas (9-11 s) y la llave en T lo aprieta.
+    # 5) El perforador aparece a un lado con la broca suelta delante del portabrocas. El tope entra por la punta de la
+    #    broca hasta su lugar (9-12 s) y el tornillo de fijación se aprieta (12,3-13,8 s); luego la broca entra en el
+    #    portabrocas (14,5-16,5 s) y la llave en T lo aprieta.
     SIDE = 0.16
     STAGE_X = head_x - 0.045                                  # punta 45 mm antes de la entrada de las guías
-    tracks.append((bit, "translation", bit_base - ((1 - ease(9.0, 11.0)) * 0.07)[:, None] * Rb[:, 2], "LINEAR"))
+    tracks.append((bit, "translation", bit_base - ((1 - ease(14.5, 16.5)) * 0.07)[:, None] * Rb[:, 2], "LINEAR"))
     tracks.append((bit, "scale", show(8.5), "STEP"))
+    zc = -0.025 + (stop_z + 0.025) * ease(9.0, 12.0)
+    tracks.append((collar, "translation", np.c_[np.zeros(len(t)), np.zeros(len(t)), zc], "LINEAR"))
+    tracks.append((collar, "scale", show(9.0), "STEP"))
+    # Tornillo: eje radial x por (0, 0, 5 mm); entra 1,5 mm girando 3 vueltas (paso ~0,5 mm).
+    tighten = ease(12.3, 13.8)
+    ang = (tighten - 1) * 3 * 2 * np.pi
+    qs = np.array([[np.sin(x / 2), 0.0, 0.0, np.cos(x / 2)] for x in ang])
+    c = np.array([0.0, 0.0, 0.005])
+    pivot = np.array([c - quat_matrix(q_) @ c for q_ in qs])
+    tracks.append((screw, "translation", pivot + np.c_[0.0015 * (1 - tighten), np.zeros(len(t)), np.zeros(len(t))], "LINEAR"))
+    tracks.append((screw, "rotation", qs, "LINEAR"))
     kt = Glb(key_source)
     ktr = {}
     kclip = kt.doc["animations"][0]
@@ -2142,7 +2200,7 @@ def broca_distal(g, drill_stl, perf_source, key_source):
                                          sm.get("interpolation", "LINEAR"))
     shown = ktr["scale"][0][ktr["scale"][1][:, 0] > 0.5]
     k0, k1 = shown[0] - 0.05, shown[-1] + 0.05
-    KEY_AT = 12.0
+    KEY_AT = 17.0
     inside = (t >= KEY_AT) & (t <= KEY_AT + (k1 - k0))
     for path in ("translation", "rotation", "scale"):
         vals = sample(ktr[path], k0 + (t - KEY_AT))
@@ -2150,14 +2208,43 @@ def broca_distal(g, drill_stl, perf_source, key_source):
             vals = np.where(inside[:, None], vals, TINY)
         tracks.append((key, path, vals, "STEP" if path == "scale" else "LINEAR"))
     a = KEY_AT + (k1 - k0) + 0.8
-    # 6) Se acerca al eje de las guías y la broca entra por la guía intermedia, sin girar, hasta tocar la cortical.
+    # 6) Se acerca al eje de las guías y la broca entra por la guía intermedia, sin girar, hasta tocar la cortical
+    #    (b..b+8 s). 7) Perfora girando la primera cortical y sigue hasta que el tope se apoya en la guía intermedia
+    #    (c..c+7 s): la punta queda DISTAL_SHORT antes de la segunda cortical.
     side = SIDE * (1 - ease(a, a + 3.0))
     b = a + 3.5
-    tip = STAGE_X + (bone_x - STAGE_X) * ease(b, b + 9.0)
+    c = b + 8.5
+    tip = STAGE_X + (cort1_out - STAGE_X) * ease(b, b + 8.0)
+    drill = np.clip((t - c) / 7.0, 0, 1)
+    tip = np.where(t >= c, cort1_out + (end_x - cort1_out) * drill, tip)
     poses = [perf_local(x, s) for x, s in zip(tip, side)]
     tracks.append((perf, "translation", np.array([P[:3, 3] for P in poses]), "LINEAR"))
     tracks.append((perf, "rotation", np.repeat(np.array(nodes[perf]["rotation"], float)[None], len(t), 0), "LINEAR"))
     tracks.append((perf, "scale", show(8.0), "STEP"))
+    # La broca gira sobre su propio eje mientras perfora y se detiene con el tope en la guía.
+    spin = np.clip((t - (c - 0.5)) / 7.5, 0, 1) * 2 * np.pi * 14
+    qb = matrix_quat(Rb)
+    tracks.append((bit, "rotation", np.array([quat_mul(qb, np.array([[0, 0, np.sin(x / 2), np.cos(x / 2)]]))[0] for x in spin]), "LINEAR"))
+    # Perforación de la primera cortical (Φ4): se marca detrás de la punta, del mismo color translúcido que las demás.
+    depth = cort1_in - cort1_out
+    cut = np.clip((tip - cort1_out) / depth, 0, 1)
+    base_mat = next(m for m in g.doc["materials"] if m["name"].startswith("Hueso_esponjoso_abertura"))
+    g.doc["materials"].append({"name": "Hueso_esponjoso_abertura_distal", "doubleSided": True, "alphaMode": "BLEND",
+                               "pbrMetallicRoughness": dict(base_mat["pbrMetallicRoughness"]), "emissiveFactor": [0.35, 0.17, 0.11]})
+    angs = np.linspace(0, 2 * np.pi, 41)
+    ring = np.stack([np.cos(angs), np.sin(angs), np.zeros_like(angs)], 1) * 0.0021
+    posc = np.concatenate([ring, ring + [0, 0, depth]]).astype("<f4")
+    nor = np.concatenate([ring, ring]).astype("<f4") / 0.0021
+    ids = np.array([v for i in range(40) for v in (i, i + 1, 41 + i, i + 1, 42 + i, 41 + i)], "<u2")
+    prim = {"attributes": {"POSITION": g.append_raw(posc, 5126, "VEC3", 34962), "NORMAL": g.append_raw(nor, 5126, "VEC3", 34962)},
+            "indices": g.append_raw(ids, 5123, "SCALAR", 34963), "material": len(g.doc["materials"]) - 1}
+    g.doc["meshes"].append({"name": "Perforacion_primera_cortical_distal", "primitives": [prim]})
+    nodes.append({"name": "Perforacion_primera_cortical_distal", "mesh": len(g.doc["meshes"]) - 1,
+                  "translation": [cort1_out, 0.0, GUIDE_Z], "rotation": [0.0, np.sin(np.pi / 4), 0.0, np.cos(np.pi / 4)],
+                  "scale": [TINY] * 3})
+    hole = len(nodes) - 1
+    nodes[conj]["children"].append(hole)
+    tracks.append((hole, "scale", np.where((cut > 0.02)[:, None], np.c_[np.ones(len(t)), np.ones(len(t)), np.maximum(cut, TINY)], TINY), "LINEAR"))
     new_input = g.append(t[:, None], "SCALAR")
     clip["channels"], clip["samplers"] = [], []
     for node, path, values, interp in tracks:
@@ -2165,15 +2252,16 @@ def broca_distal(g, drill_stl, perf_source, key_source):
                                  "interpolation": interp})
         clip["channels"].append({"sampler": len(clip["samplers"]) - 1, "target": {"node": node, "path": path}})
     clip["name"] = "Paso7_3_retiro_del_trocar_y_broca_de_4mm"
-    print(f"7.3: trocar fuera 1-6 s; broca al portabrocas 9-11 s; llave en T {KEY_AT:.1f}-{a - 0.8:.1f} s; al eje "
-          f"{a:.1f}-{a + 3:.1f} s; entra por las guías {b:.1f}-{b + 9:.1f} s (punta en la cortical); dura {T:.0f} s")
+    assert c + 9.0 <= T, "la animación termina antes de la perforación"
+    print(f"7.3: trocar fuera 1-6 s; tope 9-13,8 s; broca al portabrocas 14,5-16,5 s; llave en T {KEY_AT:.1f}-{a - 0.8:.1f} s; "
+          f"al eje {a:.1f}-{a + 3:.1f} s; por las guías {b:.1f}-{b + 8:.1f} s; perfora {c:.1f}-{c + 7:.1f} s; dura {T:.0f} s")
 
 
 if __name__ == "__main__":
     action, src, dst = sys.argv[1:4]
     if action == "broca_distal":             # paso 7.3, a partir del 7.2 ya ajustado (tmp-a19)
         glb = Glb(src)
-        broca_distal(glb, *sys.argv[4:7])
+        broca_distal(glb, *sys.argv[4:9])
         glb.save(dst)
         sys.exit()
     if action == "guias_distales":           # paso 7.2, a partir del 7.1 ya ajustado (tmp-a18)

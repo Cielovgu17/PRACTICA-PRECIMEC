@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 OUT = Path(__file__).resolve().parent
-BASE = "http://127.0.0.1:8000/ilustraciones3d/index.html"
+BASE = os.environ.get("ESCENA_BASE", "http://127.0.0.1:8000") + "/ilustraciones3d/index.html"
 EXTRA = os.environ.get("ESCENA_EXTRA", "")  # parámetros adicionales, p. ej. "&refinar=1"
 SCENES = [
     "etapa1-paciente-obeso", "1-1-posicion-supina", "1-2-intensificador", "2-1-aduccion", "2-2-fijar-miembro",
