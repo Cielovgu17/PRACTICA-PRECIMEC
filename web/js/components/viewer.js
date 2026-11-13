@@ -63,7 +63,18 @@ export function createViewer({
   const speed = h('button', { class: 'viewer-btn', type: 'button', 'aria-label': 'Velocidad 1×', title: 'Cambiar la velocidad', onClick: cycleSpeed }, '1×');
   const time = h('input', { class: 'viewer-time', type: 'range', min: 0, max: 1000, value: 0, 'aria-label': 'Posición de la animación', onInput: (e) => engine?.seekRatio(e.target.value / 1000) });
   const animationGroup = h('div', { class: 'viewer-group viewer-animation', hidden: true }, play, restart, speed, time);
+  // Cámara automática: se acerca sola a lo que se mueve. Al mover la cámara a mano se apaga; este botón la enciende.
+  const follow = h('button', {
+    class: 'viewer-btn viewer-follow',
+    type: 'button',
+    'aria-pressed': 'true',
+    title: 'La cámara se acerca sola a lo que se está moviendo',
+    hidden: true,
+    onClick: () => { if (engine) engine.setAutoCamera(!engine.autoCamera); },
+  }, 'Cámara automática');
+  const showFollow = (on) => follow.setAttribute('aria-pressed', on ? 'true' : 'false');
   const viewGroup = h('div', { class: 'viewer-group' },
+    follow,
     ['Anterior', 'Posterior', 'Superior'].map((label, i) => h('button', {
       class: 'viewer-btn',
       type: 'button',
@@ -207,6 +218,7 @@ export function createViewer({
       if (token !== loadToken) return;
       engine = new Engine3D(canvas);
       engine.onEnd = sync;
+      engine.onAutoChange = showFollow;
       // Para lectores de pantalla el lienzo es una imagen con nombre; las vistas se cambian con los botones.
       const drawing = canvas.querySelector('canvas');
       drawing.setAttribute('role', 'img');
@@ -233,6 +245,8 @@ export function createViewer({
       bar.hidden = false;
       hint.hidden = false;
       animationGroup.hidden = !animated;
+      follow.hidden = !engine.focus;
+      showFollow(engine.autoCamera);
       if (animated) {
         const calm = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
         if (autoplay && !calm) engine.setPlaying(true);
@@ -273,6 +287,7 @@ export function createViewer({
     report();
   };
   root.currentTime = () => engine?.info().time ?? 0;
+  root.engine = () => engine;                                      // para revisar el visor desde la consola
   root.destroy = () => {
     loadToken += 1;
     dispose();

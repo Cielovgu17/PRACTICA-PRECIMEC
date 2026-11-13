@@ -112,6 +112,10 @@
 .viewer-btn svg { width: 18px; height: 18px; }
 .viewer-btn:hover { background: var(--navy-line); }
 .viewer-btn:focus-visible { outline-color: var(--orange); }
+/* Cámara automática: encendida se marca en naranja; apagada queda como los demás botones. */
+.viewer-follow { margin-right: 6px; border: 1px solid var(--navy-line); }
+.viewer-follow[aria-pressed="true"] { background: var(--orange); border-color: var(--orange); color: var(--navy); font-weight: 500; }
+.viewer-follow[aria-pressed="true"]:hover { background: var(--orange); }
 /* La barra de tiempo se ve fina, pero su zona para tocar y arrastrar mide 28 px de alto. */
 .viewer-time { flex: 1; min-width: 80px; height: 28px; margin: 0 8px; accent-color: var(--orange); cursor: pointer; }
 .viewer-time:focus-visible { outline-color: var(--orange); }

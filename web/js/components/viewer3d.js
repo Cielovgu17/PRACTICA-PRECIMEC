@@ -44,6 +44,11 @@ export class Engine3D {
     this.start = 0;
     this.end = 0;
     this.onEnd = null;
+    // Cámara automática: durante la animación se acerca a lo que se está moviendo. Se apaga cuando la persona
+    // mueve la cámara con el ratón, la rueda o los botones de acercar, y se vuelve a encender con su botón.
+    this.autoCamera = true;
+    this.onAutoChange = null;
+    this.focus = null;
 
     try {
       this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -65,6 +70,7 @@ export class Engine3D {
     this.camera = new THREE.PerspectiveCamera(40, 1, 0.01, 1000);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
+    this.watchControls();
 
     this.observer = new ResizeObserver(() => this.resize());
     this.observer.observe(container);
@@ -91,9 +97,182 @@ export class Engine3D {
         this.onEnd?.();
       }
     }
+    if (this.autoCamera && this.focus && (this.playing || this.time > this.start + 0.05)) this.followFocus(delta);
     this.controls.update();
     this.fitClipping();
     this.renderer.render(this.scene, this.camera);
+  }
+
+  // Si la persona toma la cámara (arrastrar o rueda), la cámara automática se apaga.
+  watchControls() {
+    this.controls.addEventListener('start', () => this.setAutoCamera(false));
+  }
+
+  setAutoCamera(on) {
+    if (this.autoCamera === on) return;
+    this.autoCamera = on;
+    this.onAutoChange?.(on);
+  }
+
+  // Recorre la animación una vez y anota, cada 0,2 s, la caja de las piezas que se están moviendo (cambian de
+  // lugar, giran o aparecen). En cada instante el foco es lo que se mueve desde poco antes hasta 1,2 s después,
+  // para llegar a tiempo; si en un tramo nada se mueve, se queda en el último foco.
+  computeFocus() {
+    this.focus = null;
+    if (!this.mixer || !this.clip || this.end - this.start < 0.5) return;
+    const keep = this.time;
+    const step = 0.2;
+    const times = [];
+    for (let t = this.start; t < this.end; t += step) times.push(t);
+    times.push(this.end);
+    const meshes = this.meshes.filter((mesh) => mesh.visible);
+    // Zona del hueso: si lo que se mueve llega al fémur, el foco es esa zona (la punta que perfora, la pieza que
+    // entra) y no todo el instrumento que la sostiene.
+    this.model.updateMatrixWorld(true);
+    const bone = new THREE.Box3();
+    meshes.filter((mesh) => /femur/i.test(`${mesh.name} ${mesh.parent?.name || ''}`) && !/canal/i.test(mesh.name))
+      .forEach((mesh) => bone.expandByObject(mesh));
+    if (!bone.isEmpty()) bone.expandByScalar(this.radius * 0.04);
+    const previous = new Map();
+    const pos = new THREE.Vector3();
+    const quat = new THREE.Quaternion();
+    const scale = new THREE.Vector3();
+    const corner = new THREE.Vector3();
+    let lastCenter = null;
+    const moving = times.map((t) => {
+      this.time = t;
+      this.applyTime();
+      this.model.updateMatrixWorld(true);
+      const box = new THREE.Box3();
+      const corners = [];
+      for (const mesh of meshes) {
+        const e = mesh.matrixWorld.elements;
+        const before = previous.get(mesh);
+        previous.set(mesh, e.slice());
+        if (!before) continue;
+        mesh.matrixWorld.decompose(pos, quat, scale);
+        if (Math.min(scale.x, scale.y, scale.z) < 0.01) continue;           // todavía oculta
+        let change = 0;
+        for (let i = 0; i < 16; i += 1) change = Math.max(change, Math.abs(e[i] - before[i]) * (i >= 12 && i < 15 ? 1 / this.radius : 1));
+        if (change <= 1e-4) continue;
+        box.expandByObject(mesh);
+        const geometry = mesh.geometry;
+        if (!geometry.boundingBox) geometry.computeBoundingBox();
+        const { min, max } = geometry.boundingBox;
+        for (let c = 0; c < 8; c += 1) {
+          corners.push(corner.set(c & 1 ? max.x : min.x, c & 2 ? max.y : min.y, c & 4 ? max.z : min.z).applyMatrix4(mesh.matrixWorld).clone());
+        }
+      }
+      if (box.isEmpty()) { lastCenter = null; return null; }
+      // Si avanza y su punta delantera ya llegó al hueso, el foco es esa punta (lo que perfora o entra).
+      const center = box.getCenter(new THREE.Vector3());
+      const advance = lastCenter ? center.clone().sub(lastCenter) : null;
+      lastCenter = center;
+      if (advance && advance.length() > this.radius * 0.002 && !bone.isEmpty()) {
+        advance.normalize();
+        const front = corners.reduce((best, p) => (p.dot(advance) > best.dot(advance) ? p : best));
+        if (bone.containsPoint(front)) {
+          const near = new THREE.Box3().setFromCenterAndSize(front, new THREE.Vector3().setScalar(this.radius * 0.1));
+          near.contact = true;
+          return near;
+        }
+      }
+      return box;
+    });
+    this.time = keep;
+    this.applyTime();
+    // Si en la ventana hay contacto con el hueso, manda el contacto; si no, todo lo que se mueve.
+    const raw = moving.map((_, i) => {
+      const near = new THREE.Box3();
+      const all = new THREE.Box3();
+      for (let k = Math.max(0, i - 1); k <= Math.min(moving.length - 1, i + 6); k += 1) {
+        if (!moving[k]) continue;
+        (moving[k].contact ? near : all).union(moving[k]);
+      }
+      const box = near.isEmpty() ? all : near;
+      return box.isEmpty() ? null : box;
+    });
+    const first = raw.find(Boolean);
+    if (!first) return;
+    // Dirección del movimiento en cada instante (para mirarlo de costado): cómo se corre el centro de lo que se
+    // mueve. Los giros en el sitio no tienen dirección y no cambian el ángulo.
+    const step3 = moving.map((box, i) => {
+      const before = moving[i - 1];
+      if (!box || !before) return null;
+      const d = box.getCenter(new THREE.Vector3()).sub(before.getCenter(new THREE.Vector3()));
+      return d.length() > this.radius * 0.002 ? d.normalize() : null;
+    });
+    const axes = step3.map((_, i) => {
+      const acc = new THREE.Vector3();
+      let ref = null;
+      for (let k = Math.max(0, i - 2); k <= Math.min(step3.length - 1, i + 8); k += 1) {
+        const v = step3[k];
+        if (!v) continue;
+        ref = ref || v;
+        acc.addScaledVector(v, v.dot(ref) < 0 ? -1 : 1);       // ida y vuelta por el mismo eje cuentan igual
+      }
+      return acc.length() > 0.5 ? acc.normalize() : null;
+    });
+    let last = first;
+    const minRadius = this.radius * 0.06;
+    const centers = [];
+    const radii = [];
+    raw.forEach((box) => {
+      last = box || last;
+      centers.push(last.getCenter(new THREE.Vector3()));
+      radii.push(Math.max(last.getSize(new THREE.Vector3()).length() / 2, minRadius));
+    });
+    // Suavizado de ±0,6 s para que el foco no salte de una pieza a otra.
+    const smooth = (values, add, scaleBy) => values.map((_, i) => {
+      let acc = null;
+      let n = 0;
+      for (let k = Math.max(0, i - 3); k <= Math.min(values.length - 1, i + 3); k += 1) { acc = add(acc, values[k]); n += 1; }
+      return scaleBy(acc, n);
+    });
+    this.focus = {
+      times,
+      centers: smooth(centers, (a, v) => (a ? a.add(v) : v.clone()), (a, n) => a.divideScalar(n)),
+      radii: smooth(radii, (a, v) => (a ?? 0) + v, (a, n) => a / n),
+      axes,
+    };
+  }
+
+  focusAt(t) {
+    const { times, centers, radii } = this.focus;
+    const x = THREE.MathUtils.clamp((t - times[0]) / 0.2, 0, times.length - 1);
+    const i = Math.min(Math.floor(x), times.length - 2);
+    const f = x - i;
+    const axis = this.focus.axes[Math.round(x)];
+    if (times.length < 2) return { center: centers[0], radius: radii[0], axis };
+    return { center: centers[i].clone().lerp(centers[i + 1], f), radius: radii[i] + (radii[i + 1] - radii[i]) * f, axis };
+  }
+
+  // Lleva la cámara poco a poco hacia el foco. Si lo que se mueve avanza en una dirección, la cámara gira lo justo
+  // para verlo de costado (si no, una pieza que viene hacia la cámara se vería corta).
+  followFocus(delta) {
+    const { center, radius, axis } = this.focusAt(this.time);
+    const k = 1 - Math.exp(-Math.min(delta, 0.1) * 1.6);
+    const vertical = THREE.MathUtils.degToRad(this.camera.fov / 2);
+    const horizontal = Math.atan(Math.tan(vertical) * Math.min(this.camera.aspect, 1));
+    const wanted = (radius / Math.sin(Math.min(vertical, horizontal))) * 1.3;
+    const offset = this.camera.position.clone().sub(this.controls.target);
+    const distance = offset.length();
+    offset.normalize();
+    if (axis) {
+      // Se mira de costado al movimiento: la dirección horizontal perpendicular a él (del lado donde ya está la
+      // cámara), a la altura actual de la cámara pero entre 10° y 40°.
+      const up = this.camera.up;
+      const across = new THREE.Vector3().crossVectors(up, axis);
+      if (across.lengthSq() > 1e-4) {
+        across.normalize();
+        if (across.dot(offset) < 0) across.negate();
+        const height = THREE.MathUtils.clamp(Math.asin(THREE.MathUtils.clamp(offset.dot(up), -1, 1)), THREE.MathUtils.degToRad(10), THREE.MathUtils.degToRad(40));
+        const side = across.multiplyScalar(Math.cos(height)).addScaledVector(up, Math.sin(height));
+        offset.lerp(side, k * 0.6).normalize();
+      }
+    }
+    this.controls.target.lerp(center, k);
+    this.camera.position.copy(this.controls.target).addScaledVector(offset, distance + (wanted - distance) * k);
   }
 
   // El plano de recorte cercano sigue al acercamiento: si quedara fijo según el tamaño de toda la escena (que
@@ -225,6 +404,7 @@ export class Engine3D {
       this.applyTime();
     }
     if (refit || this.clip !== previousClip) this.fit();
+    this.computeFocus();
   }
 
   info() {
@@ -353,6 +533,7 @@ export class Engine3D {
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.target.copy(target);
+    this.watchControls();
   }
 
   view(name) {
@@ -378,6 +559,7 @@ export class Engine3D {
   }
 
   zoom(factor) {
+    this.setAutoCamera(false);
     const offset = this.camera.position.clone().sub(this.controls.target).multiplyScalar(factor);
     this.camera.position.copy(this.controls.target).add(offset);
   }
@@ -399,6 +581,7 @@ export class Engine3D {
 
   restart() {
     this.seek(this.start);
+    this.setAutoCamera(true);
   }
 
   seek(seconds) {
