@@ -26,6 +26,28 @@ export function defaultHidden(pieces) {
   return pieces.filter((name) => /canal/i.test(name));
 }
 
+// Resorte críticamente amortiguado (como SmoothDamp): acerca "current" a "goal" con velocidad que crece y se apaga
+// suave. Cambia current y velocity en su lugar.
+function damp(current, goal, velocity, smoothTime, dt) {
+  const omega = 2 / smoothTime;
+  const x = omega * dt;
+  const e = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
+  const change = current.clone().sub(goal);
+  const temp = velocity.clone().addScaledVector(change, omega).multiplyScalar(dt);
+  velocity.addScaledVector(temp, -omega).multiplyScalar(e);
+  current.copy(goal).add(change.add(temp).multiplyScalar(e));
+}
+
+function dampScalar(holder, goal, velocity, smoothTime, dt) {
+  const omega = 2 / smoothTime;
+  const x = omega * dt;
+  const e = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
+  const change = holder.v - goal;
+  const temp = (velocity + omega * change) * dt;
+  holder.v = goal + (change + temp) * e;
+  return (velocity - omega * temp) * e;
+}
+
 export class Engine3D {
   constructor(container) {
     this.container = container;
@@ -111,6 +133,7 @@ export class Engine3D {
   setAutoCamera(on) {
     if (this.autoCamera === on) return;
     this.autoCamera = on;
+    this.goal = null;                                        // al volver, parte de donde está la cámara
     this.onAutoChange?.(on);
   }
 
@@ -119,6 +142,7 @@ export class Engine3D {
   // para llegar a tiempo; si en un tramo nada se mueve, se queda en el último foco.
   computeFocus() {
     this.focus = null;
+    this.goal = null;
     if (!this.mixer || !this.clip || this.end - this.start < 0.5) return;
     const keep = this.time;
     const step = 0.2;
@@ -185,7 +209,7 @@ export class Engine3D {
     const raw = moving.map((_, i) => {
       const near = new THREE.Box3();
       const all = new THREE.Box3();
-      for (let k = Math.max(0, i - 1); k <= Math.min(moving.length - 1, i + 6); k += 1) {
+      for (let k = Math.max(0, i - 2); k <= Math.min(moving.length - 1, i + 10); k += 1) {   // de 0,4 s antes a 2 s después
         if (!moving[k]) continue;
         (moving[k].contact ? near : all).union(moving[k]);
       }
@@ -222,11 +246,11 @@ export class Engine3D {
       centers.push(last.getCenter(new THREE.Vector3()));
       radii.push(Math.max(last.getSize(new THREE.Vector3()).length() / 2, minRadius));
     });
-    // Suavizado de ±0,6 s para que el foco no salte de una pieza a otra.
+    // Suavizado de ±2 s para que el foco no salte de una pieza a otra.
     const smooth = (values, add, scaleBy) => values.map((_, i) => {
       let acc = null;
       let n = 0;
-      for (let k = Math.max(0, i - 3); k <= Math.min(values.length - 1, i + 3); k += 1) { acc = add(acc, values[k]); n += 1; }
+      for (let k = Math.max(0, i - 10); k <= Math.min(values.length - 1, i + 10); k += 1) { acc = add(acc, values[k]); n += 1; }
       return scaleBy(acc, n);
     });
     this.focus = {
@@ -249,15 +273,20 @@ export class Engine3D {
 
   // Lleva la cámara poco a poco hacia el foco. Si lo que se mueve avanza en una dirección, la cámara gira lo justo
   // para verlo de costado (si no, una pieza que viene hacia la cámara se vería corta).
+  // Para que la cámara se vea tranquila: tiene una meta (centro, distancia y ángulo) que solo cambia cuando lo
+  // importante se sale bastante del encuadre (más de media pantalla), cambia mucho de tamaño o hay que girar más de 35°. Mientras tanto se
+  // queda quieta. Cuando cambia, va hacia la meta con un resorte amortiguado (arranca y frena suave, sin rebotes).
   followFocus(delta) {
     const { center, radius, axis } = this.focusAt(this.time);
-    const k = 1 - Math.exp(-Math.min(delta, 0.1) * 1.6);
+    const dt = Math.min(delta, 0.1);
     const vertical = THREE.MathUtils.degToRad(this.camera.fov / 2);
     const horizontal = Math.atan(Math.tan(vertical) * Math.min(this.camera.aspect, 1));
-    const wanted = (radius / Math.sin(Math.min(vertical, horizontal))) * 1.3;
+    const view = Math.sin(Math.min(vertical, horizontal));
+    const wanted = (radius / view) * 1.3;
     const offset = this.camera.position.clone().sub(this.controls.target);
     const distance = offset.length();
     offset.normalize();
+    let dir = offset.clone();
     if (axis) {
       // Se mira de costado al movimiento: la dirección horizontal perpendicular a él (del lado donde ya está la
       // cámara), a la altura actual de la cámara pero entre 10° y 40°.
@@ -267,12 +296,36 @@ export class Engine3D {
         across.normalize();
         if (across.dot(offset) < 0) across.negate();
         const height = THREE.MathUtils.clamp(Math.asin(THREE.MathUtils.clamp(offset.dot(up), -1, 1)), THREE.MathUtils.degToRad(10), THREE.MathUtils.degToRad(40));
-        const side = across.multiplyScalar(Math.cos(height)).addScaledVector(up, Math.sin(height));
-        offset.lerp(side, k * 0.6).normalize();
+        dir = across.multiplyScalar(Math.cos(height)).addScaledVector(up, Math.sin(height)).normalize();
       }
     }
-    this.controls.target.lerp(center, k);
-    this.camera.position.copy(this.controls.target).addScaledVector(offset, distance + (wanted - distance) * k);
+    if (!this.goal) {
+      this.goal = { center: this.controls.target.clone(), distance, dir: offset.clone() };
+      this.speed3 = { center: new THREE.Vector3(), distance: 0, dir: new THREE.Vector3() };
+    }
+    const goal = this.goal;
+    const shown = goal.distance * view;                      // radio de lo que se ve con la meta actual
+    const away = center.distanceTo(goal.center);
+    const size = wanted / goal.distance;
+    const turn = dir.angleTo(goal.dir) > THREE.MathUtils.degToRad(35);
+    goal.age = (goal.age ?? 99) + dt;
+    // Después de cambiar de meta se espera al menos 2,5 s, salvo que lo importante ya se salga del todo.
+    const due = goal.age > 2.5 || away > shown;
+    if (due && (away > shown * 0.5 || size < 0.55 || size > 1.8 || turn)) {
+      goal.center.copy(center);
+      goal.distance = wanted;
+      goal.dir.copy(dir);
+      goal.age = 0;
+    }
+    const T = 1.8;                                           // tiempo del resorte, en segundos
+    const target = this.controls.target.clone();
+    damp(target, goal.center, this.speed3.center, T, dt);
+    const d = { v: distance };
+    this.speed3.distance = dampScalar(d, goal.distance, this.speed3.distance, T, dt);
+    damp(offset, goal.dir, this.speed3.dir, T, dt);
+    offset.normalize();
+    this.controls.target.copy(target);
+    this.camera.position.copy(target).addScaledVector(offset, d.v);
   }
 
   // El plano de recorte cercano sigue al acercamiento: si quedara fijo según el tamaño de toda la escena (que
