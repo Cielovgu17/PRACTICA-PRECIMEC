@@ -57,14 +57,29 @@ def main():
         (api / "content").write_text(snapshot, encoding="utf-8")
         (api / "me").write_text(json.dumps({"user": None, "read_only": True}), encoding="utf-8")
 
-    total = 0
-    for asset in document.get("assets", {}).values():
-        relative = asset["url"].lstrip("/")
+    # Con el servidor en línea, la base que manda es la de allá (sus números de archivo pueden ser otros):
+    #   --contenido online.json   lo publicado allá (se baja de https://USUARIO.pythonanywhere.com/api/content)
+    #   --extra 174:nombre.glb    archivos registrados allá que aún no están publicados
+    urls = {a["url"] for a in document.get("assets", {}).values()}
+    if "--contenido" in sys.argv:
+        online = json.loads(Path(sys.argv[sys.argv.index("--contenido") + 1]).read_text(encoding="utf-8"))
+        urls = {a["url"] for a in online.get("assets", {}).values()}
+    if "--extra" in sys.argv:
+        for item in sys.argv[sys.argv.index("--extra") + 1].split(","):
+            number, stored = item.split(":")
+            urls.add(f"/archivos/{int(number)}/{stored}")
+    total = copied = 0
+    for url in sorted(urls):
+        relative = url.lstrip("/")
         stored = relative.split("/")[-1]
+        if not (DATA / "archivos" / stored).is_file():
+            print(f"   (no está en esta computadora, lo sirve el servidor: {url})")
+            continue
         target = OUT / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(DATA / "archivos" / stored, target)
         total += target.stat().st_size
+        copied += 1
 
     vercel = VERCEL
     if server:
@@ -74,7 +89,7 @@ def main():
     (OUT / "_redirects").write_text(NETLIFY_REDIRECTS, encoding="utf-8")
     (OUT / "_headers").write_text(NETLIFY_HEADERS, encoding="utf-8")
     print(f"Listo: carpeta {OUT}")
-    print(f"Versión publicada el {published_at} (hora UTC), {len(document.get('assets', {}))} archivos, {total / 1024 / 1024:.1f} MB")
+    print(f"Versión publicada el {published_at} (hora UTC), {copied} archivos, {total / 1024 / 1024:.1f} MB")
 
 
 if __name__ == "__main__":

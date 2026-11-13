@@ -2044,8 +2044,138 @@ def guias_distales(g, ext_stl, mid_stl, troc_stl):
     print(f"7.2: armado en línea 2-14 s; entra por el agujero del brazo 16-24 s (punta del trocar en la cortical); dura {T:.0f} s")
 
 
+# ---------- Paso 7.3: retiro del trocar interior y broca de Φ4 mm montada en el perforador ----------
+# Broca_4.0x300mm_Bloqueo_Distal.stl (mm): punta en z 0 (cono de 1 mm), estrías 0-62 mm, caña lisa Φ4 hasta 278 mm y
+# extremo con plano (278-300 mm) que va dentro del portabrocas. La guía intermedia nueva (E30-3-190-12) tiene canal
+# de Φ4,1 mm, así que la broca de Φ4 pasa por ella. El perforador, su portabrocas y la llave en T son los mismos del 6.5:
+# la broca se monta igual que la broca cortical (entra en el portabrocas y la llave en T lo aprieta) y el conjunto
+# avanza por el eje de las guías hasta que la punta toca la cortical lateral. No perfora todavía.
+DISTAL_BIT_LENGTH = 0.300
+PERF_PARTS = ("Portabrocas_malla", "Llave_malla", "Nariz", "Cabezal", "Carcasa_empunadura", "Gatillo", "Bateria")
+
+
+def broca_distal(g, drill_stl, perf_source, key_source):
+    nodes = g.doc["nodes"]
+    idx = {n["name"]: k for k, n in enumerate(nodes)}
+    old = freeze_final(g)
+    clip = g.doc["animations"][0]
+    conj = idx["Clavo_cefalomedular_conjunto"]
+    Mc = world_matrix(g, conj)
+    # Mismo eje y mismo punto de la cortical que en el 7.2.
+    fem = idx["Femur_derecho"]
+    Mf = np.linalg.inv(Mc) @ world_matrix(g, fem)
+    fv = np.concatenate([g.array(p["attributes"]["POSITION"]).astype(float) for p in g.doc["meshes"][nodes[fem]["mesh"]]["primitives"]])
+    fv = fv @ Mf[:3, :3].T + Mf[:3, 3]
+    bone_x = fv[np.hypot(fv[:, 1], fv[:, 2] - GUIDE_Z) < 0.0015][:, 0].min()
+    base_x = bone_x - (GUIDE_TROCAR_TIP + GUIDE_NEST["trocar"])
+    head_x = base_x + GUIDE_NEST["intermedia"]                 # entrada de la guía intermedia (la más afuera)
+    # 1) Vuelven las mallas del perforador, el portabrocas y la llave (se quitaron del archivo en el 7.1).
+    for name in PERF_PARTS:
+        nodes[idx[name]]["mesh"] = copy_node_mesh(g, perf_source, name)
+    perf, chuck, key = idx["Perforador_quirurgico"], idx["Portabrocas_giratorio"], idx["Llave_en_T_portabrocas"]
+    src = Glb(perf_source)
+    sb = src.node("Broca_canulada_cortical_proximal")         # la broca del 6.5, ya asentada en el portabrocas
+    Rb = quat_matrix(np.array(sb["rotation"], float))
+    seat = np.array(sb["translation"], float) + BIT_LENGTH * Rb[:, 2]   # extremo de la broca dentro del portabrocas
+    sch = src.node("Portabrocas_giratorio")
+    nodes[chuck]["translation"], nodes[chuck]["rotation"] = sch["translation"], sch["rotation"]
+    # 2) Broca nueva: hija del portabrocas, con su extremo en el mismo asiento.
+    mesh = stl_mesh(g, drill_stl, "Broca_4mm_bloqueo_distal", [0.80, 0.81, 0.83, 1.0])
+    bit_base = seat - DISTAL_BIT_LENGTH * Rb[:, 2]
+    nodes.append({"name": "Broca_4mm_bloqueo_distal", "mesh": mesh, "translation": bit_base.tolist(),
+                  "rotation": matrix_quat(Rb).tolist(), "scale": [TINY] * 3})
+    bit = len(nodes) - 1
+    nodes[chuck]["children"].append(bit)
+    # 3) Pose del perforador: la broca sobre el eje de las guías (+x del clavo), punta en (x, 0, GUIDE_Z).
+    Wi = world_matrix(g, idx["Instrumental"])
+    L_chuck = node_matrix(nodes[chuck])
+    L_bit = np.eye(4); L_bit[:3, :3] = Rb; L_bit[:3, 3] = bit_base
+    A = L_chuck @ L_bit                                       # broca en coordenadas del perforador
+    dir_p = -(A[:3, :3] @ [0, 0, 1])                          # hacia la punta, en el perforador
+    dir_w = Mc[:3, :3] @ [1.0, 0.0, 0.0]
+    R0 = Wi[:3, :3] @ quat_matrix(np.array(nodes[perf].get("rotation", [0, 0, 0, 1]), float))   # como quedó en el 6.8
+    q = quat_between(R0 @ dir_p, dir_w)
+    Rw = quat_matrix(q) @ R0                                  # el giro más corto desde como se sostenía en el 6.5
+    side_w = Mc[:3, :3] @ [0.0, 1.0, 0.0]
+
+    def perf_local(tip_x, side):
+        tip_w = (Mc @ np.r_[tip_x, 0.0, GUIDE_Z, 1.0])[:3] + side * side_w
+        M = np.eye(4); M[:3, :3] = Rw
+        M[:3, 3] = tip_w - Rw @ A[:3, 3]
+        return np.linalg.inv(Wi) @ M
+
+    L_end = perf_local(bone_x, 0.0)
+    nodes[perf]["rotation"] = matrix_quat(L_end[:3, :3]).tolist()
+    # Espacio entre la nariz del portabrocas y la entrada de la guía intermedia, con la punta en la cortical.
+    cv = g.array(g.doc["meshes"][nodes[idx["Portabrocas_malla"]]["mesh"]]["primitives"][0]["attributes"]["POSITION"]).astype(float)
+    Lm = node_matrix(nodes[idx["Portabrocas_malla"]])
+    cv = cv @ Lm[:3, :3].T + Lm[:3, 3]
+    cv = cv @ L_chuck[:3, :3].T + L_chuck[:3, 3]              # en el perforador
+    s_front = ((cv - (A[:3, 3] + DISTAL_BIT_LENGTH * (A[:3, :3] @ [0, 0, 1]))) @ dir_p).max()
+    gap = (bone_x - DISTAL_BIT_LENGTH + s_front)
+    print(f"   cortical x = {bone_x*1000:.1f} mm; entrada de la guía intermedia x = {head_x*1000:.1f} mm; "
+          f"nariz del portabrocas x = {gap*1000:.1f} mm (espacio {(head_x - gap)*1000:.1f} mm)")
+    assert head_x - gap > 0.005, "el portabrocas chocaría con la cabeza de las guías"
+    T = 40.0
+    fps = 30
+    t = np.arange(0, T + 1e-9, 1 / fps)
+    ease = lambda a, b: smooth((t - a) / (b - a))
+    show = lambda a: np.where((t >= a)[:, None], 1.0, TINY) * np.ones((len(t), 3))
+    tracks = []
+    # 4) El trocar interior sale por el eje (1-6 s) hasta quedar fuera de la guía intermedia y deja de verse.
+    troc = idx["Trocar_distal"]
+    x_t = base_x + GUIDE_NEST["trocar"] - 0.230 * ease(1.0, 6.0)
+    tracks.append((troc, "translation", np.c_[x_t, np.zeros(len(t)), np.full(len(t), GUIDE_Z)], "LINEAR"))
+    tracks.append((troc, "scale", np.where((t < 6.8)[:, None], 1.0, TINY) * np.ones((len(t), 3)), "STEP"))
+    # 5) El perforador aparece a un lado; la broca entra en su portabrocas (9-11 s) y la llave en T lo aprieta.
+    SIDE = 0.16
+    STAGE_X = head_x - 0.045                                  # punta 45 mm antes de la entrada de las guías
+    tracks.append((bit, "translation", bit_base - ((1 - ease(9.0, 11.0)) * 0.07)[:, None] * Rb[:, 2], "LINEAR"))
+    tracks.append((bit, "scale", show(8.5), "STEP"))
+    kt = Glb(key_source)
+    ktr = {}
+    kclip = kt.doc["animations"][0]
+    for ch in kclip["channels"]:
+        if kt.doc["nodes"][ch["target"]["node"]]["name"] == "Llave_en_T_portabrocas":
+            sm = kclip["samplers"][ch["sampler"]]
+            ktr[ch["target"]["path"]] = (kt.array(sm["input"])[:, 0].astype(float), kt.array(sm["output"]).astype(float),
+                                         sm.get("interpolation", "LINEAR"))
+    shown = ktr["scale"][0][ktr["scale"][1][:, 0] > 0.5]
+    k0, k1 = shown[0] - 0.05, shown[-1] + 0.05
+    KEY_AT = 12.0
+    inside = (t >= KEY_AT) & (t <= KEY_AT + (k1 - k0))
+    for path in ("translation", "rotation", "scale"):
+        vals = sample(ktr[path], k0 + (t - KEY_AT))
+        if path == "scale":
+            vals = np.where(inside[:, None], vals, TINY)
+        tracks.append((key, path, vals, "STEP" if path == "scale" else "LINEAR"))
+    a = KEY_AT + (k1 - k0) + 0.8
+    # 6) Se acerca al eje de las guías y la broca entra por la guía intermedia, sin girar, hasta tocar la cortical.
+    side = SIDE * (1 - ease(a, a + 3.0))
+    b = a + 3.5
+    tip = STAGE_X + (bone_x - STAGE_X) * ease(b, b + 9.0)
+    poses = [perf_local(x, s) for x, s in zip(tip, side)]
+    tracks.append((perf, "translation", np.array([P[:3, 3] for P in poses]), "LINEAR"))
+    tracks.append((perf, "rotation", np.repeat(np.array(nodes[perf]["rotation"], float)[None], len(t), 0), "LINEAR"))
+    tracks.append((perf, "scale", show(8.0), "STEP"))
+    new_input = g.append(t[:, None], "SCALAR")
+    clip["channels"], clip["samplers"] = [], []
+    for node, path, values, interp in tracks:
+        clip["samplers"].append({"input": new_input, "output": g.append(values, "VEC4" if path == "rotation" else "VEC3"),
+                                 "interpolation": interp})
+        clip["channels"].append({"sampler": len(clip["samplers"]) - 1, "target": {"node": node, "path": path}})
+    clip["name"] = "Paso7_3_retiro_del_trocar_y_broca_de_4mm"
+    print(f"7.3: trocar fuera 1-6 s; broca al portabrocas 9-11 s; llave en T {KEY_AT:.1f}-{a - 0.8:.1f} s; al eje "
+          f"{a:.1f}-{a + 3:.1f} s; entra por las guías {b:.1f}-{b + 9:.1f} s (punta en la cortical); dura {T:.0f} s")
+
+
 if __name__ == "__main__":
     action, src, dst = sys.argv[1:4]
+    if action == "broca_distal":             # paso 7.3, a partir del 7.2 ya ajustado (tmp-a19)
+        glb = Glb(src)
+        broca_distal(glb, *sys.argv[4:7])
+        glb.save(dst)
+        sys.exit()
     if action == "guias_distales":           # paso 7.2, a partir del 7.1 ya ajustado (tmp-a18)
         glb = Glb(src)
         guias_distales(glb, *sys.argv[4:7])
