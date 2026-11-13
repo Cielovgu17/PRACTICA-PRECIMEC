@@ -332,6 +332,10 @@ export class Engine3D {
         const own = material.clone();
         // Sin un entorno que reflejar, el metal se vería casi negro sobre el fondo oscuro.
         if ('metalness' in own) own.metalness = Math.min(own.metalness, 0.3);
+        // Las piezas huecas (como la carcasa del perforador) tienen ranuras: por ellas se ve la cara de adentro de
+        // la otra pared. Si solo se dibujara la cara de afuera, la ranura parecería un agujero que atraviesa la pieza.
+        // Las transparentes (el hueso) se dejan como están.
+        if (!own.transparent) own.side = THREE.DoubleSide;
         return own;
       });
       if (node.material.length === 1) node.material = node.material[0];

@@ -790,6 +790,10 @@ const ESCENAS = {
       if (/^Femur/.test(node.name)) { femurNode = femurNode || node; node.material = boneGlass(0.28); }
       if (/^Canal_medular/.test(node.name)) node.material = new THREE.MeshStandardMaterial({ color: 0x4f8fd8, transparent: true, opacity: 0.45, depthWrite: false, side: THREE.DoubleSide });
       if (/Camara|Vista_/.test(node.name)) node.visible = false;
+      // doble=1: como el visor del instructivo, las piezas opacas se dibujan por las dos caras.
+      if (params.get('doble') && !/^Femur|^Canal_medular/.test(node.name)) {
+        [node.material].flat().forEach((m) => { if (!m.transparent) m.side = THREE.DoubleSide; });
+      }
       if (params.get('sin_canal') && /^Canal_medular/.test(node.name)) node.visible = false;
     });
     const q = new THREE.Quaternion(); femurNode.getWorldQuaternion(q);
@@ -805,7 +809,12 @@ const ESCENAS = {
       const pos = node.geometry.attributes.position;
       for (let i = 0; i < pos.count; i += 7) { v.fromBufferAttribute(pos, i).applyMatrix4(node.matrixWorld); if (v.dot(S) > top) { top = v.dot(S); topPoint.copy(v); } }
     });
-    const c = topPoint.clone().addScaledVector(S, Number(params.get('alto') || -0.13));
+    let c = topPoint.clone().addScaledVector(S, Number(params.get('alto') || -0.13));
+    // foco=NombreDePieza: el encuadre se centra en esa pieza (para revisar detalles de cerca).
+    const focusNode = params.get('foco') && gltf.scene.getObjectByName(params.get('foco'));
+    if (focusNode) c = new THREE.Box3().setFromObject(focusNode).getCenter(new THREE.Vector3());
+    // reves=1: las mismas vistas desde el lado contrario (posterior y externa).
+    if (params.get('reves')) { A.negate(); Md.negate(); }
     const views = [['De frente (anterior)', A, S], ['De lado (interna)', Md, S]];
     views.forEach(([name, dir, up], i) => {
       const scene = new THREE.Scene();

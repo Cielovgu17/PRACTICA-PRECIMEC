@@ -2453,8 +2453,124 @@ def medidor_distal(g, mango_stl, gancho_stl):
           f"{(cort2_out - cort1_out)*1000:.1f} mm (no se muestra como lectura); dura {T:.0f} s")
 
 
+# ---------- Paso 7.7: retiro del medidor y tornillo cortical de bloqueo distal ----------
+# Tornillo cortical.stl (mm): punta en z 0, rosca Φ4,5 hasta 38 mm, cuello hasta 40 mm, cabeza cónica Φ7,6 (40-45 mm)
+# con hexágono de 3,5 mm entre caras (42-45 mm). Medía 40 mm bajo la cabeza; el medidor dio 30,6 mm entre corticales,
+# así que se usa de 32 mm (aprobado): la rosca (3-38 mm) se comprime a 27 mm, sin tocar punta ni cabeza.
+# Atornillador_bloqueo_distal_vastago/mango/pasador.stl (mm, mismo marco): punta hexagonal (0-4 mm) que entra 3 mm en
+# la cabeza del tornillo, vástago Φ5,5/Φ6,7, mango Φ40 (186-295 mm) con su pasador. Pasan por el manguito exterior
+# (Φ7,9 por dentro). El tornillo entra girando por el orificio de la broca y queda con la cabeza apoyada en la primera
+# cortical (z 40,3 mm del modelo: ahí la cabeza ya es más ancha que el orificio de Φ4).
+SCREW_THREAD = (0.003, 0.038)
+SCREW_SHORTER = 0.008
+SCREW_SEAT = 0.0403 - SCREW_SHORTER
+SCREW_SOCKET = 0.042 - SCREW_SHORTER          # fondo del hexágono: ahí llega la punta del atornillador
+SCREW_PITCH = 0.00175 * (SCREW_THREAD[1] - SCREW_THREAD[0] - SCREW_SHORTER) / (SCREW_THREAD[1] - SCREW_THREAD[0])
+
+
+def tornillo_distal(g, screw_stl, shaft_stl, handle_stl, pin_stl):
+    nodes = g.doc["nodes"]
+    idx = {n["name"]: k for k, n in enumerate(nodes)}
+    freeze_final(g)
+    clip = g.doc["animations"][0]
+    conj = idx["Clavo_cefalomedular_conjunto"]
+    Mc = world_matrix(g, conj)
+    o, d = np.array([-0.1, 0.0, GUIDE_Z]), np.array([1.0, 0.0, 0.0])
+    fem = idx["Femur_derecho"]
+    outer = ray_hits(g, fem, np.linalg.inv(Mc) @ world_matrix(g, fem), o, d) - 0.1
+    cort1_out, cort2_out = outer[0], outer[-1]
+    # Tornillo de 32 mm.
+    screw_mesh = stl_mesh(g, screw_stl, "Tornillo_cortical_distal", [0.70, 0.72, 0.76, 1.0])
+    a, b = SCREW_THREAD
+    for p in g.doc["meshes"][screw_mesh]["primitives"]:
+        v = g.array(p["attributes"]["POSITION"]).astype(float)
+        z = v[:, 2]
+        k = (b - a - SCREW_SHORTER) / (b - a)
+        nz = np.where(z < a, z, np.where(z < b, a + (z - a) * k, z - SCREW_SHORTER))
+        g.set_array(p["attributes"]["POSITION"], np.c_[v[:, :2], nz].astype(np.float32))
+    seat_x = cort1_out + SCREW_SEAT                            # origen (punta) del tornillo asentado
+    # Que la rosca (Φ4,5) no toque el clavo: rectas paralelas al eje a 2,3 mm alrededor.
+    nail = idx["Clavo_malla"]
+    Mn = np.linalg.inv(Mc) @ world_matrix(g, nail)
+    touches = 0
+    for ang in np.linspace(0, 2 * np.pi, 16, endpoint=False):
+        off = np.array([0.0, np.cos(ang), np.sin(ang)]) * 0.0023
+        h = ray_hits(g, nail, Mn, o + off, d) - 0.1
+        touches += int(((h > seat_x - 0.032) & (h < seat_x)).sum())
+    print(f"   tornillo de 32 mm: punta en x {seat_x*1000:.1f} mm (segunda cortical por fuera en {cort2_out*1000:.1f} mm, "
+          f"sale {(seat_x - cort2_out)*1000:.1f} mm); cortes de la rosca con el clavo: {touches}")
+    q = np.array([0.0, -np.sin(np.pi / 4), 0.0, np.cos(np.pi / 4)])    # z del tornillo y del atornillador -> -x
+    T = 40.0
+    fps = 30
+    t = np.arange(0, T + 1e-9, 1 / fps)
+    ease = lambda a_, b_: smooth((t - a_) / (b_ - a_))
+    show = lambda a_: np.where((t >= a_)[:, None], 1.0, TINY) * np.ones((len(t), 3))
+    tracks = []
+    # 1) Medidor: el gancho se suelta (se endereza y avanza 2 mm), la varilla vuelve al mango y el mango sale por el
+    #    eje (0,5-8,5 s); luego deja de verse.
+    handle_g, rod = idx["Medidor_tornillo_cortical_mango"], idx["Medidor_tornillo_cortical_gancho"]
+    rq0 = np.array(nodes[rod]["rotation"], float)
+    rt0 = np.array(nodes[rod]["translation"], float)
+    ang0 = 2 * np.arctan2(rq0[1], rq0[3])
+    tilt = ang0 * (1 - ease(0.5, 1.2))
+    qs = np.array([[0.0, np.sin(x / 2), 0.0, np.cos(x / 2)] for x in tilt])
+    cpiv = np.array([0.0, 0.0, 0.166])
+    piv = np.array([cpiv - quat_matrix(q_) @ cpiv for q_ in qs])
+    dz_end = rt0[2] - (cpiv - quat_matrix(rq0) @ cpiv)[2]
+    dz = dz_end - HOOK_PAST * ease(0.5, 1.2) * (1 - ease(1.3, 4.0)) + (0 - dz_end) * ease(1.3, 4.0)
+    tracks.append((rod, "translation", piv + np.c_[np.zeros(len(t)), np.zeros(len(t)), dz], "LINEAR"))
+    tracks.append((rod, "rotation", qs, "LINEAR"))
+    h0 = np.array(nodes[handle_g]["translation"], float)
+    tracks.append((handle_g, "translation", h0 - (0.26 * ease(4.5, 8.5))[:, None] * d[None, :], "LINEAR"))
+    tracks.append((handle_g, "scale", np.where((t < 8.6)[:, None], 1.0, TINY) * np.ones((len(t), 3)), "STEP"))
+    # 2) Tornillo y atornillador aparecen afuera, en el eje: la punta hexagonal entra en la cabeza (10,5-13 s).
+    screw = len(nodes)
+    nodes.append({"name": "Tornillo_cortical_distal", "mesh": screw_mesh, "rotation": q.tolist(), "scale": [TINY] * 3})
+    driver = len(nodes)
+    nodes.append({"name": "Atornillador_bloqueo_distal", "rotation": q.tolist(), "scale": [TINY] * 3,
+                  "children": [driver + 1, driver + 2, driver + 3]})
+    for name, path, color in (("Atornillador_vastago", shaft_stl, [0.78, 0.79, 0.82, 1.0]),
+                              ("Atornillador_mango", handle_stl, [0.16, 0.36, 0.62, 1.0]),
+                              ("Atornillador_pasador", pin_stl, [0.70, 0.71, 0.74, 1.0])):
+        nodes.append({"name": name, "mesh": stl_mesh(g, path, name, color)})
+    nodes[conj]["children"] += [screw, driver]
+    stage_x = cort1_out - 0.24                                 # punta del tornillo afuera, delante del manguito
+    # 3) El conjunto entra por el manguito exterior hasta que la punta toca el hueso (14-20 s) y luego avanza girando
+    #    con el paso de la rosca hasta que la cabeza se apoya en la cortical (20,5-31 s).
+    x_tip = stage_x + (cort1_out - stage_x) * ease(14.0, 20.0)
+    screwing = np.clip((t - 20.5) / 10.5, 0, 1)
+    x_tip = np.where(t >= 20.5, cort1_out + (seat_x - cort1_out) * screwing, x_tip)
+    spin = np.where(t >= 20.5, (x_tip - cort1_out) / SCREW_PITCH * 2 * np.pi, 0.0)
+    rots = np.array([quat_mul(q, np.array([[0, 0, np.sin(s / 2), np.cos(s / 2)]]))[0] for s in spin])
+    tracks.append((screw, "translation", np.c_[x_tip, np.zeros(len(t)), np.full(len(t), GUIDE_Z)], "LINEAR"))
+    tracks.append((screw, "rotation", rots, "LINEAR"))
+    tracks.append((screw, "scale", show(9.5), "STEP"))
+    # Atornillador: empieza 60 mm detrás del tornillo y entra en el hexágono; acompaña al tornillo; al final sale
+    # por el eje (33-37 s) y deja de verse.
+    engage = 0.060 * (1 - ease(10.5, 13.0)) + 0.30 * ease(33.0, 37.0)
+    x_drv = x_tip - SCREW_SOCKET - engage
+    tracks.append((driver, "translation", np.c_[x_drv, np.zeros(len(t)), np.full(len(t), GUIDE_Z)], "LINEAR"))
+    tracks.append((driver, "rotation", rots, "LINEAR"))
+    tracks.append((driver, "scale", np.where(((t >= 9.5) & (t < 37.1))[:, None], 1.0, TINY) * np.ones((len(t), 3)), "STEP"))
+    new_input = g.append(t[:, None], "SCALAR")
+    clip["channels"], clip["samplers"] = [], []
+    for node, path, values, interp in tracks:
+        clip["samplers"].append({"input": new_input, "output": g.append(values, "VEC4" if path == "rotation" else "VEC3"),
+                                 "interpolation": interp})
+        clip["channels"].append({"sampler": len(clip["samplers"]) - 1, "target": {"node": node, "path": path}})
+    clip["name"] = "Paso7_7_tornillo_cortical_de_bloqueo_distal"
+    turns = (seat_x - cort1_out) / SCREW_PITCH
+    print(f"7.7: medidor fuera 0,5-8,5 s; atornillador al tornillo 10,5-13 s; por el manguito 14-20 s; atornilla "
+          f"{turns:.0f} vueltas 20,5-31 s; el atornillador sale 33-37 s; dura {T:.0f} s")
+
+
 if __name__ == "__main__":
     action, src, dst = sys.argv[1:4]
+    if action == "tornillo_distal":          # paso 7.7, a partir del 7.6 ya ajustado (tmp-a23)
+        glb = Glb(src)
+        tornillo_distal(glb, *sys.argv[4:8])
+        glb.save(dst)
+        sys.exit()
     if action == "medidor_distal":           # paso 7.6, a partir del 7.5 ya ajustado (tmp-a22)
         glb = Glb(src)
         medidor_distal(glb, sys.argv[4], sys.argv[5])
