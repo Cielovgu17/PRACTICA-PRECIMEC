@@ -487,7 +487,9 @@ function canal() {
 
 // Canal intramedular esquemático: un tubo recto siguiendo el eje del canal del modelo, de diámetro parejo,
 // cuyas puntas se desvanecen (no se ve dónde empieza ni dónde termina).
-function straightCanal({ radius = 0.0063, through = [-0.00045, 0.02], clippingPlanes } = {}) {
+// Por defecto el canal mide 12 mm y va paralelo a la regla (vertical), centrado en su corchete de Φ12 mm
+// (la regla se ubica en x = -0,5 mm): así sus dos paredes coinciden con los bordes del corchete.
+function straightCanal({ radius = 0.006, through = [-0.0005, 0.02], parallel = true, clippingPlanes } = {}) {
   const pos = canalGeometry.attributes.position;
   const bins = new Map();
   for (let i = 0; i < pos.count; i += 1) {
@@ -508,7 +510,8 @@ function straightCanal({ radius = 0.0063, through = [-0.00045, 0.02], clippingPl
   const fx = fit(0);
   const fz = fit(2);
   const [tx, ty] = through;
-  const at = (y) => new THREE.Vector3(tx + fx.slope * (y - ty), y, fz.m + fz.slope * (y - my));
+  const sx = parallel ? 0 : fx.slope;
+  const at = (y) => new THREE.Vector3(tx + sx * (y - ty), y, fz.m + fz.slope * (y - my));
   const bottom = at(centers[0][1]);
   const top = at(centers[n - 1][1]);
   const length = top.distanceTo(bottom);
@@ -942,12 +945,16 @@ const ESCENAS = {
     const plantillaB = radiographicTemplate({ opacity: 0.35 });
     plantillaB.position.set(-0.0005, level - TEMPLATE.bracket12Y, 0.03);
     scene2.add(plantillaB);
-    const leftWall = -0.0068;
-    const rightWall = 0.0059;
+    // Paredes del canal = bordes del corchete de Φ12 mm (regla en x = -0,5 mm, corchete de ±6 mm).
+    const leftWall = -0.0065;
+    const rightWall = 0.0055;
     scene2.add(tube([[leftWall, level, 0.012], [rightWall, level, 0.012]], 0.0008, M.orange));
     for (const x of [leftWall, rightWall]) scene2.add(tube([[x, level - 0.0034, 0.012], [x, level + 0.0034, 0.012]], 0.0007, M.orange));
     const zoom = { x: 700, y: 240, w: 620, h: 620 };
-    const close = new THREE.PerspectiveCamera(26, 1, 0.01, 5);
+    // Vista de frente sin perspectiva: la regla queda delante del canal y, con perspectiva, el canal se vería
+    // más angosto que el corchete aunque midan lo mismo. Así las paredes coinciden con el corchete.
+    const half = 0.21 * Math.tan(THREE.MathUtils.degToRad(13));
+    const close = new THREE.OrthographicCamera(-half, half, half, -half, 0.01, 5);
     close.position.set(0, level, 0.21);
     close.lookAt(0, level, 0);
     close.updateMatrixWorld();
