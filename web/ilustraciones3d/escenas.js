@@ -485,6 +485,53 @@ function canal() {
   return shadowed(new THREE.Mesh(canalGeometry, M.canal));
 }
 
+// Canal intramedular esquemático: un tubo recto siguiendo el eje del canal del modelo, de diámetro parejo,
+// cuyas puntas se desvanecen (no se ve dónde empieza ni dónde termina).
+function straightCanal({ radius = 0.0063, through = [-0.00045, 0.02], clippingPlanes } = {}) {
+  const pos = canalGeometry.attributes.position;
+  const bins = new Map();
+  for (let i = 0; i < pos.count; i += 1) {
+    const key = Math.round(pos.getY(i) / 0.01);
+    const b = bins.get(key) || { x: 0, z: 0, y: 0, n: 0 };
+    b.x += pos.getX(i); b.y += pos.getY(i); b.z += pos.getZ(i); b.n += 1;
+    bins.set(key, b);
+  }
+  const centers = [...bins.values()].map((b) => [b.x / b.n, b.y / b.n, b.z / b.n]).sort((a, b) => a[1] - b[1]);
+  // Recta por mínimos cuadrados: x y z en función de y.
+  const n = centers.length;
+  const my = centers.reduce((s, c) => s + c[1], 0) / n;
+  const fit = (k) => {
+    const m = centers.reduce((s, c) => s + c[k], 0) / n;
+    const slope = centers.reduce((s, c) => s + (c[1] - my) * (c[k] - m), 0) / centers.reduce((s, c) => s + (c[1] - my) ** 2, 0);
+    return { m, slope };
+  };
+  const fx = fit(0);
+  const fz = fit(2);
+  const [tx, ty] = through;
+  const at = (y) => new THREE.Vector3(tx + fx.slope * (y - ty), y, fz.m + fz.slope * (y - my));
+  const bottom = at(centers[0][1]);
+  const top = at(centers[n - 1][1]);
+  const length = top.distanceTo(bottom);
+  const geometry = new THREE.CylinderGeometry(radius, radius, length, 48, 1, true);
+  const canvas = document.createElement('canvas');
+  canvas.width = 4;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d');
+  const grad = ctx.createLinearGradient(0, 0, 0, 256);
+  grad.addColorStop(0, '#000');
+  grad.addColorStop(0.2, '#fff');
+  grad.addColorStop(0.8, '#fff');
+  grad.addColorStop(1, '#000');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 4, 256);
+  const alphaMap = new THREE.CanvasTexture(canvas);
+  const material = std(0xc77b4a, 0.6, 0, { transparent: true, alphaMap, depthWrite: false, side: THREE.DoubleSide, ...(clippingPlanes ? { clippingPlanes } : {}) });
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.position.copy(top).add(bottom).multiplyScalar(0.5);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), top.clone().sub(bottom).normalize());
+  return mesh;
+}
+
 const boneDouble = () => std(0xeadfca, 0.58, 0, { side: THREE.DoubleSide });
 const boneGlass = (opacity) => new THREE.MeshPhysicalMaterial({ color: 0xeadfca, roughness: 0.5, transparent: true, opacity, depthWrite: false, side: THREE.DoubleSide });
 
@@ -833,10 +880,10 @@ const ESCENAS = {
     const camera = perspective([0.0, 0.1, 0.62], [0.0, 0.135, 0], { fov: 34 });
     render(scene, camera);
     const p = projector(camera);
-    title('Estimar el ángulo cuello-diáfisis', 'Con la plantilla ubicada en la pierna sana.');
+    title('Estimar el ángulo cuello-diáfisis', 'Con la regla ubicada en la pierna sana.');
     const mid = (start + finish) / 2;
     callout(p([corner[0] + Math.cos(mid) * 0.032, corner[1] + Math.sin(mid) * 0.032, 0.05]), 240, 470, ['Ángulo', 'cuello-diáfisis'], { color: C.orange, anchor: 'end', size: 32 });
-    callout(p([corner[0] + TEMPLATE.halfWidth, corner[1] - 0.075, 0.048]), 1160, 650, 'Plantilla radiográfica', { color: C.orange });
+    callout(p([corner[0] + TEMPLATE.halfWidth, corner[1] - 0.075, 0.048]), 1160, 650, 'Regla radiográfica', { color: C.orange });
     callout(p([0.02, 0.06, 0.02]), 1160, 480, ['Fémur de la', 'pierna sana']);
     note();
   },
@@ -860,9 +907,9 @@ const ESCENAS = {
     const camera = perspective([0.23, 0.0, 1.05], [0.15, 0, 0], { fov: 28 });
     render(scene, camera);
     const p = projector(camera);
-    title('Leer el largo del clavo', 'Plantilla frente al fémur.', 860);
+    title('Leer la longitud del clavo', 'Regla frente al fémur.', 860);
     callout(p([tipX + edge, ENTRY.y - 0.004, 0.057]), 860, 290, ['Parte proximal:', 'en el punto de entrada'], { color: C.orange, size: 32 });
-    callout(p([tipX + edge, (ENTRY.y + tipY) / 2, 0.057]), 860, 510, ['Plantilla radiográfica:', 'se lee el largo del clavo'], { size: 32 });
+    callout(p([tipX + edge, (ENTRY.y + tipY) / 2, 0.057]), 860, 510, ['Regla radiográfica:', 'se lee la longitud del clavo'], { size: 32 });
     callout(p([tipX + edge, tipY + 0.004, 0.057]), 860, 760, ['Parte distal:', 'en la posición esperada'], { color: C.orange, size: 32 });
     note();
   },
@@ -872,8 +919,7 @@ const ESCENAS = {
     floorAndLights(scene, { key: [1, 2, 3], span: 0.7, floorY: -2 });
     const shell = boneGlass(0.32);
     scene.add(femur(shell));
-    const canalMesh = canal();
-    scene.add(canalMesh);
+    scene.add(straightCanal());
     await loadTemplate();
     const level0 = 0.02;
     const plantillaA = radiographicTemplate({ opacity: 0.4 });
@@ -891,7 +937,7 @@ const ESCENAS = {
     const scene2 = new THREE.Scene();
     floorAndLights(scene2, { key: [0.4, 1, 2.5], span: 0.2, floorY: -2 });
     scene2.add(femur(std(0xeadfca, 0.6, 0, { side: THREE.DoubleSide, clippingPlanes: clip })));
-    scene2.add(shadowed(new THREE.Mesh(canalGeometry, std(0xc77b4a, 0.6, 0, { clippingPlanes: clip, side: THREE.DoubleSide }))));
+    scene2.add(straightCanal({ clippingPlanes: clip }));
     const level = 0.02;
     const plantillaB = radiographicTemplate({ opacity: 0.35 });
     plantillaB.position.set(-0.0005, level - TEMPLATE.bracket12Y, 0.03);
@@ -914,8 +960,8 @@ const ESCENAS = {
     add('line', { x1: b[0], y1: a[1], x2: zoom.x, y2: zoom.y, stroke: C.orange, 'stroke-width': 2 });
     add('line', { x1: b[0], y1: b[1], x2: zoom.x, y2: zoom.y + zoom.h, stroke: C.orange, 'stroke-width': 2 });
     add('rect', { x: zoom.x, y: zoom.y, width: zoom.w, height: zoom.h, fill: 'none', stroke: C.line, 'stroke-width': 2, rx: 8 });
-    title('Estimar el diámetro (Φ) del canal', 'Con la plantilla, para elegir el diámetro (Φ) del clavo.', 700);
-    callout(pz([0.0085, level + 0.0068, 0.032]), 1345, 300, ['Corchete de la', 'plantilla (Φ12 mm)'], { color: C.orange, size: 28 });
+    title('Estimar el diámetro (Φ) del canal', null, 700);
+    callout(pz([0.0085, level + 0.0068, 0.032]), 1345, 300, ['Corchete de la', 'regla (Φ12 mm)'], { color: C.orange, size: 28 });
     callout(pz([rightWall, level, 0.012]), 1345, 470, 'Diámetro (Φ)', { color: C.orange, size: 32 });
     callout(pz([-0.0005, level - 0.03, 0.005]), 1345, 690, ['Canal', 'intramedular'], { size: 28 });
     chip(700, 880, 'Clavo principal: Φ9,4, Φ10, Φ11 o Φ12 mm');
@@ -947,7 +993,7 @@ const ESCENAS = {
     const camera = perspective([0, 0, 1.28], [0.02, 0, 0], { fov: 26 });
     render(scene, camera);
     const p = projector(camera);
-    title('Elegir el largo del clavo');
+    title('Elegir la longitud del clavo');
     const la = p([a + 0.09, LESSER_Y, 0.03]);
     const lb = p([b + 0.09, LESSER_Y, 0.03]);
     label(la[0], la[1] + 8, ['Trocánter', 'menor'], { size: 25, color: C.muted, plate: true });
