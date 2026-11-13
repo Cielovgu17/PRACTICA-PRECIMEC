@@ -1963,15 +1963,16 @@ def brazo_distal(g, arm_stl, knob_stl):
     screw = ease(10.0, 18.0)
     k_off = KNOB_TRAVEL * (1 - screw)
     turns = (screw - 1) * KNOB_TRAVEL / THREAD_PITCH * 2 * np.pi        # termina en 0 (posición del modelo)
-    # Gira sobre su propio eje (a lo largo de x, por el centro de la perilla), no alrededor del origen del clavo.
-    kacc = [g.doc["accessors"][p["attributes"]["POSITION"]] for p in g.doc["meshes"][knob_mesh]["primitives"]]
-    kmin, kmax = np.min([x["min"] for x in kacc], 0), np.max([x["max"] for x in kacc], 0)
-    center = np.array([0.0, (kmin[1] + kmax[1]) / 2, (kmin[2] + kmax[2]) / 2])
-    pivot = np.array([center - quat_matrix(np.array([np.sin(x / 2), 0, 0, np.cos(x / 2)])) @ center for x in turns])
-    knob_pos = arm_pos + np.c_[-k_off, np.zeros(len(t)), np.zeros(len(t))] + pivot
+    # Gira y avanza sobre su propio eje: el de la varilla roscada, que no es horizontal (sube 0,0877 mm por mm, ~5°,
+    # como el brazo) y pasa por y = 0, z = 201,9 mm en x = -127,5 mm (ajustado a la varilla en el modelo).
+    axis = np.array([1.0, 0.0, 0.0877]); axis /= np.linalg.norm(axis)
+    center = np.array([-0.1275, 0.0, 0.2019])
+    qs = np.array([[*(axis * np.sin(x / 2)), np.cos(x / 2)] for x in turns])
+    pivot = np.array([center - quat_matrix(q_) @ center for q_ in qs])
+    knob_pos = arm_pos - k_off[:, None] * axis[None, :] + pivot
     tracks.append((knob, "translation", knob_pos, "LINEAR"))
     tracks.append((knob, "scale", np.where((t >= 1.5)[:, None], 1.0, TINY) * np.ones((len(t), 3)), "STEP"))
-    tracks.append((knob, "rotation", np.array([[np.sin(x / 2), 0, 0, np.cos(x / 2)] for x in turns]), "LINEAR"))
+    tracks.append((knob, "rotation", qs, "LINEAR"))
     new_input = g.append(t[:, None], "SCALAR")
     clip["channels"], clip["samplers"] = [], []
     for node, path, values, interp in tracks:
