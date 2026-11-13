@@ -41,6 +41,10 @@ class Handler(BaseHTTPRequestHandler):
     db_path: Path
     uploads: Path
     secure_cookie = False
+    # Sitio que ya tiene publicadas las imágenes y animaciones (p. ej. https://practica-precimec.vercel.app).
+    # Si un archivo no está en esta máquina, se pide allá: así el servidor en línea gratis (con poco disco)
+    # no necesita guardar los archivos pesados.
+    external_assets = ""
 
     def log_message(self, fmt, *args):
         sys.stderr.write(f"{self.command} {self.path} -> {args[1] if len(args) > 1 else ''}\n")
@@ -158,7 +162,13 @@ class Handler(BaseHTTPRequestHandler):
     def _security_headers(self):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "same-origin")
-        self.send_header("Content-Security-Policy", CSP)
+        csp = CSP
+        if self.external_assets:
+            # Las animaciones e imágenes que vienen del otro sitio se cargan con fetch (connect-src) o <img>.
+            csp = csp.replace("connect-src 'self'", f"connect-src 'self' {self.external_assets}")
+            csp = csp.replace("img-src 'self'", f"img-src 'self' {self.external_assets}")
+            csp = csp.replace("media-src 'self'", f"media-src 'self' {self.external_assets}")
+        self.send_header("Content-Security-Policy", csp)
 
     # ---------- Archivos ----------
 
@@ -174,8 +184,17 @@ class Handler(BaseHTTPRequestHandler):
             ).fetchone()
         finally:
             conn.close()
-        if not row or not (self.uploads / row["stored_name"]).is_file():
+        if not row:
             raise ApiError(404, "Archivo no encontrado.")
+        if not (self.uploads / row["stored_name"]).is_file():
+            if not self.external_assets:
+                raise ApiError(404, "Archivo no encontrado.")
+            self.send_response(302)
+            self.send_header("Location", self.external_assets + path)
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "private, max-age=86400")
+            self.end_headers()
+            return
         self._send_file(self.uploads / row["stored_name"], row["mime"], "private, max-age=86400")
 
     def _static(self, path):

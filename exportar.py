@@ -8,6 +8,7 @@ solo los textos publicados, los archivos que esos textos usan y la página.
 import json
 import shutil
 import sqlite3
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -34,6 +35,9 @@ NETLIFY_HEADERS = "/api/*\n  Content-Type: application/json; charset=utf-8\n  Ca
 
 
 def main():
+    # python exportar.py --servidor https://USUARIO.pythonanywhere.com : el link de Vercel muestra lo del servidor
+    # en línea (que tiene el modo edición) y solo guarda las imágenes y animaciones.
+    server = sys.argv[sys.argv.index("--servidor") + 1].rstrip("/") if "--servidor" in sys.argv else ""
     conn = sqlite3.connect(DATA / "plataforma.db")
     row = conn.execute("SELECT snapshot, published_at FROM publications ORDER BY id DESC LIMIT 1").fetchone()
     if not row:
@@ -43,12 +47,15 @@ def main():
 
     if OUT.exists():
         shutil.rmtree(OUT)
-    shutil.copytree(WEB, OUT, ignore=lambda folder, names: [n for n in names if n in SKIP])
-
-    api = OUT / "api"
-    api.mkdir()
-    (api / "content").write_text(snapshot, encoding="utf-8")
-    (api / "me").write_text(json.dumps({"user": None, "read_only": True}), encoding="utf-8")
+    if server:
+        # Solo los archivos pesados; la página, los textos y el modo edición los da el servidor en línea.
+        OUT.mkdir()
+    else:
+        shutil.copytree(WEB, OUT, ignore=lambda folder, names: [n for n in names if n in SKIP])
+        api = OUT / "api"
+        api.mkdir()
+        (api / "content").write_text(snapshot, encoding="utf-8")
+        (api / "me").write_text(json.dumps({"user": None, "read_only": True}), encoding="utf-8")
 
     total = 0
     for asset in document.get("assets", {}).values():
@@ -59,7 +66,11 @@ def main():
         shutil.copy2(DATA / "archivos" / stored, target)
         total += target.stat().st_size
 
-    (OUT / "vercel.json").write_text(json.dumps(VERCEL, indent=2), encoding="utf-8")
+    vercel = VERCEL
+    if server:
+        # Lo que no es un archivo de aquí (página, textos, modo edición y archivos nuevos) lo responde el servidor.
+        vercel = {"cleanUrls": False, "rewrites": [{"source": "/(.*)", "destination": f"{server}/$1"}]}
+    (OUT / "vercel.json").write_text(json.dumps(vercel, indent=2), encoding="utf-8")
     (OUT / "_redirects").write_text(NETLIFY_REDIRECTS, encoding="utf-8")
     (OUT / "_headers").write_text(NETLIFY_HEADERS, encoding="utf-8")
     print(f"Listo: carpeta {OUT}")

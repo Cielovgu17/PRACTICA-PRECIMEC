@@ -4,6 +4,8 @@ Reutiliza el mismo manejador de server.py: aquí solo se traduce la petición WS
 manejador espera. Variables de entorno opcionales:
     PRECIMEC_DATA   carpeta de datos (por defecto, data/ junto a este archivo)
     PRECIMEC_HTTP=1 solo para probar sin HTTPS: la cookie de sesión deja de marcarse como Secure
+    PRECIMEC_ARCHIVOS sitio de donde se piden los archivos que no estén en esta máquina
+                    (por defecto, https://practica-precimec.vercel.app; vacío = ninguno)
 """
 import io
 import os
@@ -18,6 +20,8 @@ DATA = Path(os.environ.get("PRECIMEC_DATA", ROOT / "data")).resolve()
 Handler.db_path = prepare(DATA)
 Handler.uploads = DATA / "archivos"
 Handler.secure_cookie = os.environ.get("PRECIMEC_HTTP") != "1"
+# En línea, las imágenes y animaciones que no estén en data/archivos se piden al link público (Vercel).
+Handler.external_assets = os.environ.get("PRECIMEC_ARCHIVOS", "https://practica-precimec.vercel.app").rstrip("/")
 
 
 class WsgiHandler(Handler):

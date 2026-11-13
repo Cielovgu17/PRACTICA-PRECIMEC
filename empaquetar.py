@@ -2,8 +2,9 @@
 
     python empaquetar.py
 
-El zip va a PythonAnywhere (ver SUBIR-EN-LINEA.md). Lleva una copia consistente de la base de datos,
-los archivos que esta usa y el archivo de la cuenta admin; no lleva copias de seguridad ni pruebas.
+El zip va a PythonAnywhere (ver SUBIR-EN-LINEA.md). Lleva el programa, una copia consistente de la base de
+datos y el archivo de la cuenta admin; no lleva copias de seguridad, pruebas ni las imágenes y animaciones
+(esas siguen en el link público de Vercel).
 """
 import sqlite3
 import tempfile
@@ -38,7 +39,8 @@ def main():
                 add_tree(archive, ROOT / name, f"instructivo/{name}")
             archive.write(snapshot, "instructivo/data/plataforma.db")
             archive.write(ROOT / "data" / "credenciales-iniciales.txt", "instructivo/data/credenciales-iniciales.txt")
-            add_tree(archive, ROOT / "data" / "archivos", "instructivo/data/archivos")
+            # Las imágenes y animaciones no van en el zip (pesan más de 1 GB y la cuenta gratis tiene 512 MB):
+            # el servidor las pide al link público de Vercel (ver PRECIMEC_ARCHIVOS en wsgi.py).
     print(f"Listo: {TARGET} ({TARGET.stat().st_size / 1024 / 1024:.1f} MB)")
 
 
